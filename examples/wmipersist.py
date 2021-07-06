@@ -52,13 +52,13 @@ import logging
 from impacket.examples import logger
 from impacket.examples.utils import parse_target
 from impacket import version
-from impacket.dcerpc.v5.dcomrt import DCOMConnection
+from impacket.dcerpc.v5.dcomrt import DCOMConnection, COMVERSION
 from impacket.dcerpc.v5.dcom import wmi
 from impacket.dcerpc.v5.dtypes import NULL
 
 
 class WMIPERSISTENCE:
-    def __init__(self, username = '', password = '', domain = '', options= None):
+    def __init__(self, username='', password='', domain='', options=None):
         self.__username = username
         self.__password = password
         self.__domain = domain
@@ -70,8 +70,14 @@ class WMIPERSISTENCE:
 
     @staticmethod
     def checkError(banner, resp):
-        if resp.GetCallStatus(0) != 0:
-            logging.error('%s - ERROR (0x%x)' % (banner, resp.GetCallStatus(0)))
+        call_status = resp.GetCallStatus(0) & 0xffffffff  # interpret as unsigned
+        if call_status != 0:
+            from impacket.dcerpc.v5.dcom.wmi import WBEMSTATUS
+            try:
+                error_name = WBEMSTATUS.enumItems(call_status).name
+            except ValueError:
+                error_name = 'Unknown'
+            logging.error('%s - ERROR: %s (0x%08x)' % (banner, error_name, call_status))
         else:
             logging.info('%s - OK' % banner)
 
@@ -81,7 +87,7 @@ class WMIPERSISTENCE:
 
         iInterface = dcom.CoCreateInstanceEx(wmi.CLSID_WbemLevel1Login,wmi.IID_IWbemLevel1Login)
         iWbemLevel1Login = wmi.IWbemLevel1Login(iInterface)
-        iWbemServices= iWbemLevel1Login.NTLMLogin('//./root/subscription', NULL, NULL)
+        iWbemServices = iWbemLevel1Login.NTLMLogin('//./root/subscription', NULL, NULL)
         iWbemLevel1Login.RemRelease()
 
         if self.__options.action.upper() == 'REMOVE':
@@ -101,8 +107,8 @@ class WMIPERSISTENCE:
                                 r'Filter="__EventFilter.Name=\"EF_%s\""' % (
                                 self.__options.name, self.__options.name)))
         else:
-            activeScript ,_ = iWbemServices.GetObject('ActiveScriptEventConsumer')
-            activeScript =  activeScript.SpawnInstance()
+            activeScript, _ = iWbemServices.GetObject('ActiveScriptEventConsumer')
+            activeScript = activeScript.SpawnInstance()
             activeScript.Name = self.__options.name
             activeScript.ScriptingEngine = 'VBScript'
             activeScript.CreatorSID = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0]
@@ -111,14 +117,14 @@ class WMIPERSISTENCE:
                 iWbemServices.PutInstance(activeScript.marshalMe()))
         
             if options.filter is not None:
-                eventFilter,_ = iWbemServices.GetObject('__EventFilter')
-                eventFilter =  eventFilter.SpawnInstance()
+                eventFilter, _ = iWbemServices.GetObject('__EventFilter')
+                eventFilter = eventFilter.SpawnInstance()
                 eventFilter.Name = 'EF_%s' % self.__options.name
-                eventFilter.CreatorSID =  [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0]
+                eventFilter.CreatorSID = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0]
                 eventFilter.Query = options.filter
                 eventFilter.QueryLanguage = 'WQL'
                 eventFilter.EventNamespace = r'root\cimv2'
-                self.checkError('Adding EventFilter EF_%s'% self.__options.name, 
+                self.checkError('Adding EventFilter EF_%s' % self.__options.name,
                     iWbemServices.PutInstance(eventFilter.marshalMe()))
 
             else:
@@ -137,11 +143,11 @@ class WMIPERSISTENCE:
                 eventFilter.Query = 'select * from __TimerEvent where TimerID = "TI_%s" ' % self.__options.name
                 eventFilter.QueryLanguage = 'WQL'
                 eventFilter.EventNamespace = r'root\subscription'
-                self.checkError('Adding EventFilter EF_%s'% self.__options.name, 
+                self.checkError('Adding EventFilter EF_%s' % self.__options.name,
                     iWbemServices.PutInstance(eventFilter.marshalMe()))
 
-            filterBinding,_ = iWbemServices.GetObject('__FilterToConsumerBinding')
-            filterBinding =  filterBinding.SpawnInstance()
+            filterBinding, _ = iWbemServices.GetObject('__FilterToConsumerBinding')
+            filterBinding = filterBinding.SpawnInstance()
             filterBinding.Filter = '__EventFilter.Name="EF_%s"' % self.__options.name
             filterBinding.Consumer = 'ActiveScriptEventConsumer.Name="%s"' % self.__options.name
             filterBinding.CreatorSID = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0]
@@ -150,6 +156,7 @@ class WMIPERSISTENCE:
                 iWbemServices.PutInstance(filterBinding.marshalMe()))
 
         dcom.disconnect()
+
 
 # Process command-line arguments.
 if __name__ == '__main__':
@@ -162,6 +169,8 @@ if __name__ == '__main__':
 
     parser.add_argument('target', action='store', help='[domain/][username[:password]@]<address>')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-com-version', action='store', metavar = "MAJOR_VERSION:MINOR_VERSION", help='DCOM version, '
+                        'format is MAJOR_VERSION:MINOR_VERSION e.g. 5.7')
     subparsers = parser.add_subparsers(help='actions', dest='action')
 
     # A start command
@@ -196,7 +205,6 @@ if __name__ == '__main__':
 
     options = parser.parse_args()
 
-        
     if options.debug is True:
         logging.getLogger().setLevel(logging.DEBUG)
         # Print the Library's installation path
@@ -204,6 +212,13 @@ if __name__ == '__main__':
     else:
         logging.getLogger().setLevel(logging.INFO)
 
+    if options.com_version is not None:
+        try:
+            major_version, minor_version = options.com_version.split('.')
+            COMVERSION.set_default_version(int(major_version), int(minor_version))
+        except Exception:
+            logging.error("Wrong COMVERSION format, use dot separated integers e.g. \"5.7\"")
+            sys.exit(1)
 
     if options.action.upper() == 'INSTALL':
         if (options.filter is None and options.timer is None) or  (options.filter is not None and options.timer is not None):
