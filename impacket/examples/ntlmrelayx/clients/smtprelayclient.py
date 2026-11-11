@@ -1,17 +1,20 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# SMTP Protocol Client
+# Description:
+#   SMTP Protocol Client
+#   SMTP client for relaying NTLMSSP authentication to mailservers, for example Exchange
 #
 # Author:
 #   Dirk-jan Mollema (@_dirkjan) / Fox-IT (https://www.fox-it.com)
 #   Alberto Solino (@agsolino)
-#
-# Description:
-# SMTP client for relaying NTLMSSP authentication to mailservers, for example Exchange
 #
 import smtplib
 import base64
@@ -64,6 +67,9 @@ class SMTPRelayClient(ProtocolClient):
     def sendAuth(self, authenticateMessageBlob, serverChallenge=None):
         if unpack('B', authenticateMessageBlob[:1])[0] == SPNEGO_NegTokenResp.SPNEGO_NEG_TOKEN_RESP:
             respToken2 = SPNEGO_NegTokenResp(authenticateMessageBlob)
+            if respToken2.isNegoExSelected():
+                LOG.info("Target selected NEGOEX/PKU2U authentication, relay currently not supported for this mechanism")
+                raise Exception("NEGOEX/PKU2U relay is not supported")
             token = respToken2['ResponseToken']
         else:
             token = authenticateMessageBlob

@@ -1,31 +1,38 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Simple packet sniffer.
+# Description:
+#   Simple packet sniffer.
 #
-# This packet sniffer uses the pcap library to listen for packets in
-# transit over the specified interface. The returned packages can be
-# filtered according to a BPF filter (see tcpdump(3) for further
-# information on BPF filters).
+#   This packet sniffer uses the pcap library to listen for packets in
+#   transit over the specified interface. The returned packages can be
+#   filtered according to a BPF filter (see tcpdump(3) for further
+#   information on BPF filters).
 #
-# Note that the user might need special permissions to be able to use pcap.
+#   Note that the user might need special permissions to be able to use pcap.
 #
 # Authors:
-#  Maximiliano Caceres <max@coresecurity.com>
-#  Javier Kohen <jkohen@coresecurity.com>
+#   Maximiliano Caceres
+#   Javier Kohen
 #
 # Reference for:
-#  pcapy: findalldevs, open_live.
-#  ImpactDecoder.
+#   pcapy: findalldevs, open_live
+#   ImpactDecoder
+#
 
 import sys
 from threading import Thread
 import pcapy
 from pcapy import findalldevs, open_live
+from impacket import version
 
 from impacket.ImpactDecoder import EthDecoder, LinuxSLLDecoder
 
@@ -82,6 +89,7 @@ def getInterface():
     return ifs[idx]
 
 def main(filter):
+    print(version.DEPRECATION_WARNING_BANNER)
     dev = getInterface()
 
     # Open interface for catpuring.

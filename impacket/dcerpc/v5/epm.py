@@ -1,22 +1,27 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   [MS-RPCE]-C706 Interface implementation for the remote portmapper
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
+#   at https://github.com/fortra/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
-#   They are located at the end of this file. 
+#   They are located at the end of this file.
 #   Helper functions start with "h"<name of the call>.
-#   There are test cases for them too. 
+#   There are test cases for them too.
+#
+# Author:
+#   Alberto Solino (@agsolino)
 #
 import socket
 from struct import unpack
@@ -637,8 +642,7 @@ KNOWN_PROTOCOLS = {
 'F093FE3D-8131-4B73-A742-EF54C20B337B':'[MS-ISTM]: iSCSI Software Target Management Protocol',
 '28BC8D5E-CA4B-4F54-973C-ED9622D2B3AC':'[MS-ISTM]: iSCSI Software Target Management Protocol',
 '22E5386D-8B12-4BF0-B0EC-6A1EA419E366':'[MS-LREC]: Live Remote Event Capture (LREC) Protocol',
-'12345778-1234-ABCD-EF00-0123456789AB':'[MS-LSAD]: Local Security Authority (Domain Policy) Remote Protocol',
-'12345778-1234-ABCD-EF00-0123456789AB':'[MS-LSAT]: Local Security Authority (Translation Methods) Remote',
+'12345778-1234-ABCD-EF00-0123456789AB':'[MS-LSAD]/[MS-LSAT]: Local Security Authority (Domain Policy / Translation Methods) Remote Protocol',
 '708CCA10-9569-11D1-B2A5-0060977D8118':'[MS-MQDS]: Message Queuing (MSMQ):',
 '77DF7A80-F298-11D0-8358-00A024C480A8':'[MS-MQDS]: Message Queuing (MSMQ):',
 '76D12B80-3467-11D3-91FF-0090272F9EA3':'[MS-MQMP]: Message Queuing (MSMQ):',
@@ -710,7 +714,6 @@ KNOWN_PROTOCOLS = {
 'DB90832F-6910-4D46-9F5E-9FD6BFA73903':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
 '4E934F30-341A-11D1-8FB1-00A024CB6019':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
 '879C8BBE-41B0-11D1-BE11-00C04FB6BF70':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
-'00000000-0000-0000-C000-000000000046':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
 '69AB7050-3059-11D1-8FAF-00A024CB6019':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
 '7D07F313-A53F-459A-BB12-012C15B1846E':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
 'BB39332C-BFEE-4380-AD8A-BADC8AFF5BB6':'[MS-RSMP]: Removable Storage Manager (RSM) Remote Protocol',
@@ -1247,11 +1250,13 @@ def hept_lookup(destHost, inquiry_type = RPC_C_EP_ALL_ELTS, objectUUID = NULL, i
 
     return entries
 
-def hept_map(destHost, remoteIf, dataRepresentation = uuidtup_to_bin(('8a885d04-1ceb-11c9-9fe8-08002b104860', '2.0')), protocol = 'ncacn_np', dce=None):
+def hept_map(destHost, remoteIf, dataRepresentation = uuidtup_to_bin(('8a885d04-1ceb-11c9-9fe8-08002b104860', '2.0')), protocol = 'ncacn_np', dce=None, timeout=None):
 
     if dce is None:
         stringBinding = r'ncacn_ip_tcp:%s[135]' % destHost
         rpctransport = transport.DCERPCTransportFactory(stringBinding)
+        if timeout is not None:
+            rpctransport.set_connect_timeout(timeout)
         dce = rpctransport.get_dce_rpc()
         dce.connect()
         disconnect = True
@@ -1312,7 +1317,7 @@ def hept_map(destHost, remoteIf, dataRepresentation = uuidtup_to_bin(('8a885d04-
     tower['Floors'] = interface.getData() + dataRep.getData() + protId.getData() + transportData
 
     request = ept_map()
-    request['max_towers'] = 1
+    request['max_towers'] = 4
     request['map_tower']['tower_length'] = len(tower)
     request['map_tower']['tower_octet_string'] = tower.getData()
 

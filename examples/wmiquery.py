@@ -1,24 +1,28 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Description: [MS-WMI] example. It allows to issue WQL queries and
-#              get description of the objects.
+# Description:
+#   [MS-WMI] example. It allows to issue WQL queries and
+#   get description of the objects.
 #
-#              e.g.: select name from win32_account
-#              e.g.: describe win32_process
+#       e.g.: select name from win32_account
+#       e.g.: describe win32_process
 # 
 # Author:
-#  Alberto Solino (@agsolino)
+#   Alberto Solino (@agsolino)
 #
 # Reference for:
 #  DCOM
 #
-from __future__ import division
-from __future__ import print_function
+
 import argparse
 import sys
 import os
@@ -29,7 +33,7 @@ from impacket.examples.utils import parse_target
 from impacket import version
 from impacket.dcerpc.v5.dtypes import NULL
 from impacket.dcerpc.v5.dcom import wmi
-from impacket.dcerpc.v5.dcomrt import DCOMConnection
+from impacket.dcerpc.v5.dcomrt import DCOMConnection, COMVERSION
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_LEVEL_PKT_INTEGRITY
 
 if __name__ == '__main__':
@@ -95,10 +99,10 @@ if __name__ == '__main__':
                             print('%s |' % record[key]['value'], end=' ')
                     print() 
                 except Exception as e:
-                    if logging.getLogger().level == logging.DEBUG:
-                        import traceback
-                        traceback.print_exc()
                     if str(e).find('S_FALSE') < 0:
+                        if logging.getLogger().level == logging.DEBUG:
+                            import traceback
+                            traceback.print_exc()
                         raise
                     else:
                         break
@@ -121,8 +125,6 @@ if __name__ == '__main__':
         def do_exit(self, line):
             return True
 
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
 
     parser = argparse.ArgumentParser(add_help = True, description = "Executes WQL queries and gets object descriptions "
@@ -131,6 +133,9 @@ if __name__ == '__main__':
     parser.add_argument('-namespace', action='store', default='//./root/cimv2', help='namespace name (default //./root/cimv2)')
     parser.add_argument('-file', type=argparse.FileType('r'), help='input file with commands to execute in the WQL shell')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
+    parser.add_argument('-com-version', action='store', metavar = "MAJOR_VERSION:MINOR_VERSION", help='DCOM version, '
+                        'format is MAJOR_VERSION:MINOR_VERSION e.g. 5.7')
 
     group = parser.add_argument_group('authentication')
 
@@ -153,13 +158,16 @@ if __name__ == '__main__':
         sys.exit(1)
  
     options = parser.parse_args()
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    if options.com_version is not None:
+        try:
+            major_version, minor_version = options.com_version.split('.')
+            COMVERSION.set_default_version(int(major_version), int(minor_version))
+        except Exception:
+            logging.error("Wrong COMVERSION format, use dot separated integers e.g. \"5.7\"")
+            sys.exit(1)
 
     domain, username, password, address = parse_target(options.target)
 

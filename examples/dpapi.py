@@ -1,15 +1,19 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2020 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author:
-#  Alberto Solino (@agsolino)
-#
 # Description:
-#       Example for using the DPAPI/Vault structures to unlock Windows Secrets.
+#   Example for using the DPAPI/Vault structures to unlock Windows Secrets.
+#
+# Author:
+#   Alberto Solino (@agsolino)
 #
 # Examples:
 #
@@ -20,16 +24,15 @@
 #   In the case of vaults, you might need to also provide the user's sid (and the user password will be asked).
 #   For system secrets, instead of a password you will need to specify the system and security hives.
 #
-# References: All of the work done by these guys. I just adapted their work to my needs.
-#       https://www.passcape.com/index.php?section=docsys&cmd=details&id=28
-#       https://github.com/jordanbtucker/dpapick
-#       https://github.com/gentilkiwi/mimikatz/wiki/howto-~-credential-manager-saved-credentials (and everything else Ben did )
-#       http://blog.digital-forensics.it/2016/01/windows-revaulting.html
-#       https://www.passcape.com/windows_password_recovery_vault_explorer
-#       https://www.passcape.com/windows_password_recovery_dpapi_master_key
+# References:
+#   All of the work done by these guys. I just adapted their work to my needs.
+#   - https://www.passcape.com/index.php?section=docsys&cmd=details&id=28
+#   - https://github.com/jordanbtucker/dpapick
+#   - https://github.com/gentilkiwi/mimikatz/wiki/howto-~-credential-manager-saved-credentials (and everything else Ben did )
+#   - http://blog.digital-forensics.it/2016/01/windows-revaulting.html
+#   - https://www.passcape.com/windows_password_recovery_vault_explorer
+#   - https://www.passcape.com/windows_password_recovery_dpapi_master_key
 #
-from __future__ import division
-from __future__ import print_function
 
 import struct
 import argparse
@@ -55,7 +58,7 @@ from impacket.examples.secretsdump import LocalOperations, LSASecrets
 from impacket.structure import hexdump
 from impacket.dpapi import MasterKeyFile, MasterKey, CredHist, DomainKey, CredentialFile, DPAPI_BLOB, \
     CREDENTIAL_BLOB, VAULT_VCRD, VAULT_VPOL, VAULT_KNOWN_SCHEMAS, VAULT_VPOL_KEYS, P_BACKUP_KEY, PREFERRED_BACKUP_KEY, \
-    PVK_FILE_HDR, PRIVATE_KEY_BLOB, privatekeyblob_to_pkcs1, DPAPI_DOMAIN_RSA_MASTER_KEY
+    PVK_FILE_HDR, PRIVATE_KEY_BLOB, privatekeyblob_to_pkcs1, DPAPI_DOMAIN_RSA_MASTER_KEY, deriveKeysFromUser, deriveKeysFromUserkey, CREDHIST_FILE
 
 
 class DPAPI:
@@ -64,13 +67,16 @@ class DPAPI:
         self.dpapiSystem = {}
         pass
 
+    def parseHexKey(self, key):
+        return unhexlify(key.removeprefix("0x"))
+
     def getDPAPI_SYSTEM(self,secretType, secret):
         if secret.startswith("dpapi_machinekey:"):
             machineKey, userKey = secret.split('\n')
             machineKey = machineKey.split(':')[1]
             userKey = userKey.split(':')[1]
-            self.dpapiSystem['MachineKey'] = unhexlify(machineKey[2:])
-            self.dpapiSystem['UserKey'] = unhexlify(userKey[2:])
+            self.dpapiSystem['MachineKey'] = self.parseHexKey(machineKey)
+            self.dpapiSystem['UserKey'] = self.parseHexKey(userKey)
 
     def getLSA(self):
         localOperations = LocalOperations(self.options.system)
@@ -84,34 +90,6 @@ class DPAPI:
         if 'MachineKey' not in self.dpapiSystem or 'UserKey' not in self.dpapiSystem:
             logging.error('Cannot grab MachineKey/UserKey from LSA, aborting...')
             sys.exit(1)
-
-
-
-    def deriveKeysFromUser(self, sid, password):
-        # Will generate two keys, one with SHA1 and another with MD4
-        key1 = HMAC.new(SHA1.new(password.encode('utf-16le')).digest(), (sid + '\0').encode('utf-16le'), SHA1).digest()
-        key2 = HMAC.new(MD4.new(password.encode('utf-16le')).digest(), (sid + '\0').encode('utf-16le'), SHA1).digest()
-        # For Protected users
-        tmpKey = pbkdf2_hmac('sha256', MD4.new(password.encode('utf-16le')).digest(), sid.encode('utf-16le'), 10000)
-        tmpKey2 = pbkdf2_hmac('sha256', tmpKey, sid.encode('utf-16le'), 1)[:16]
-        key3 = HMAC.new(tmpKey2, (sid + '\0').encode('utf-16le'), SHA1).digest()[:20]
-
-        return key1, key2, key3
-
-    def deriveKeysFromUserkey(self, sid, pwdhash):
-        if len(pwdhash) == 20:
-            # SHA1
-            key1 = HMAC.new(pwdhash, (sid + '\0').encode('utf-16le'), SHA1).digest()
-            key2 = None
-        else:
-            # Assume MD4
-            key1 = HMAC.new(pwdhash, (sid + '\0').encode('utf-16le'), SHA1).digest()
-            # For Protected users
-            tmpKey = pbkdf2_hmac('sha256', pwdhash, sid.encode('utf-16le'), 10000)
-            tmpKey2 = pbkdf2_hmac('sha256', tmpKey, sid.encode('utf-16le'), 1)[:16]
-            key2 = HMAC.new(tmpKey2, (sid + '\0').encode('utf-16le'), SHA1).digest()[:20]
-
-        return key1, key2
 
     def run(self):
         if self.options.action.upper() == 'MASTERKEY':
@@ -164,7 +142,7 @@ class DPAPI:
                 # Use SID + hash
                 # We have hives, let's try to decrypt with them
                 self.getLSA()
-                key1, key2 = self.deriveKeysFromUserkey(self.options.sid, self.dpapiSystem['UserKey'])
+                key1, key2 = deriveKeysFromUserkey(self.options.sid, self.dpapiSystem['UserKey'])
                 decryptedKey = mk.decrypt(key1)
                 if decryptedKey:
                     print('Decrypted key with UserKey + SID')
@@ -186,8 +164,8 @@ class DPAPI:
                     print('Decrypted key: 0x%s' % hexlify(decryptedKey).decode('latin-1'))
                     return
             elif self.options.key and self.options.sid:
-                key = unhexlify(self.options.key[2:])
-                key1, key2 = self.deriveKeysFromUserkey(self.options.sid, key)
+                key = self.parseHexKey(self.options.key)
+                key1, key2 = deriveKeysFromUserkey(self.options.sid, key)
                 decryptedKey = mk.decrypt(key1)
                 if decryptedKey:
                     print('Decrypted key with key provided + SID')
@@ -199,7 +177,7 @@ class DPAPI:
                     print('Decrypted key: 0x%s' % hexlify(decryptedKey).decode('latin-1'))
                     return
             elif self.options.key:
-                key = unhexlify(self.options.key[2:])
+                key = self.parseHexKey(self.options.key)
                 decryptedKey = mk.decrypt(key)
                 if decryptedKey:
                     print('Decrypted key with key provided')
@@ -228,7 +206,7 @@ class DPAPI:
                     password = getpass("Password:")
                 else:
                     password = options.password
-                key1, key2, key3 = self.deriveKeysFromUser(self.options.sid, password)
+                key1, key2, key3 = deriveKeysFromUser(self.options.sid, password)
 
                 # if mkf['flags'] & 4 ? SHA1 : MD4
                 decryptedKey = mk.decrypt(key3)
@@ -314,7 +292,7 @@ class DPAPI:
                         break
                 masterkey=b''.join(resp['ppDataOut'][beginning:])
                 print('Decrypted key using rpc call')
-                print('Decrypted key: 0x%s' % hexlify(masterkey[beginning:]).decode())
+                print('Decrypted key: 0x%s' % hexlify(masterkey).decode())
                 return
 
             else:
@@ -415,7 +393,7 @@ class DPAPI:
             blob = DPAPI_BLOB(cred['Data'])
 
             if self.options.key is not None:
-                key = unhexlify(self.options.key[2:])
+                key = self.parseHexKey(self.options.key)
                 decrypted = blob.decrypt(key)
                 if decrypted is not None:
                     creds = CREDENTIAL_BLOB(decrypted)
@@ -435,7 +413,7 @@ class DPAPI:
                 blob = VAULT_VCRD(data)
 
                 if self.options.key is not None:
-                    key = unhexlify(self.options.key[2:])
+                    key = self.parseHexKey(self.options.key)
 
                     cleartext = None
                     for i, entry in enumerate(blob.attributesLen):
@@ -467,7 +445,7 @@ class DPAPI:
                 vpol.dump()
 
                 if self.options.key is not None:
-                    key = unhexlify(self.options.key[2:])
+                    key = self.parseHexKey(self.options.key)
                     blob = vpol['Blob']
                     data = blob.decrypt(key)
                     if data is not None:
@@ -480,35 +458,100 @@ class DPAPI:
             blob = DPAPI_BLOB(data)
 
             if self.options.key is not None:
-                key = unhexlify(self.options.key[2:])
+                key = self.parseHexKey(self.options.key)
                 if self.options.entropy_file is not None:
                     fp2 = open(self.options.entropy_file, 'rb')
                     entropy = fp2.read()
                     fp2.close()
                 elif self.options.entropy is not None:
-                    entropy = b(self.options.entropy) + b'\x00'
+                    entropy = b(self.options.entropy)
                 else:
                     entropy = None
 
                 decrypted = blob.decrypt(key, entropy)
                 if decrypted is not None:
                     print('Successfully decrypted data')
-                    hexdump(decrypted)
+                    if self.options.outfile is not None:
+                        with open(self.options.outfile, 'wb') as f:
+                            f.write(decrypted)
+                    else:
+                        hexdump(decrypted)
                     return
             else:
                 # Just print the data
                 blob.dump()
 
+        elif self.options.action.upper() == 'CREDHIST':
+            fp = open(self.options.file, 'rb')
+            data = fp.read()
+            chf = CREDHIST_FILE(data)
+
+            if len(chf.credhist_entries_list) == 0:
+                print('The CREDHIST file is empty')
+                return
+
+            # Handle key options
+            if self.options.key:
+                key = self.parseHexKey(self.options.key)
+                keys = deriveKeysFromUserkey(chf.credhist_entries_list[0].sid, key)
+
+            # Only other option is using a password
+            else:
+                # Do we have a password?
+                if self.options.password is None:
+                    # Nope let's ask it
+                    from getpass import getpass
+                    password = getpass("Password:")
+                else:
+                    password = options.password
+
+                keys = deriveKeysFromUser(chf.credhist_entries_list[0].sid, password)
+
+            if self.options.entry is None:
+                # First find the correct key to the 1st entry
+                real_key = None
+                for k in keys:
+                    chf.decrypt_entry_by_index(0, k)
+                    if chf.credhist_entries_list[0].pwdhash is not None:
+                        real_key = k
+                        break
+
+                # Wrong key
+                if real_key is None:
+                    chf.dump()
+                    print()
+                    print('Cannot decrypt (wrong key or password)')
+                    return
+
+                else:
+                    chf.decrypt(real_key)
+                    chf.dump()
+
+                    # Fully successful decryption
+                    if chf.credhist_entries_list[-1].pwdhash is not None:
+                        return
+
+            else:
+                for k in keys:
+                    chf.decrypt_entry_by_index(self.options.entry, k)
+                    if chf.credhist_entries_list[self.options.entry].pwdhash is not None:
+                        chf.credhist_entries_list[self.options.entry].dump()
+                        return
+
+                chf.credhist_entries_list[self.options.entry].dump()
+                print()
+                print('Cannot decrypt (wrong key or password)')
+                return
+
         print('Cannot decrypt (specify -key or -sid whenever applicable) ')
 
 
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
 
-    parser = argparse.ArgumentParser(add_help=True, description="Nose")
+    parser = argparse.ArgumentParser(add_help=True, description="Example for using the DPAPI/Vault structures to unlock Windows Secrets.")
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
     subparsers = parser.add_subparsers(help='actions', dest='action')
 
     # A domain backup key command
@@ -563,20 +606,22 @@ if __name__ == '__main__':
     unprotect.add_argument('-key', action='store', required=False, help='Key used for decryption')
     unprotect.add_argument('-entropy', action='store', default=None, required=False, help='String with extra entropy needed for decryption')
     unprotect.add_argument('-entropy-file', action='store', default=None, required=False, help='File with binary entropy contents (overwrites -entropy)')
+    unprotect.add_argument('-outfile', action='store', default=None, required=False, help='File to write decrypted data to (if not specified, it will be printed as hexdump)')
+
+    # A CREDHIST command
+    credhist = subparsers.add_parser('credhist', help='CREDHIST related functions')
+    credhist.add_argument('-file', action='store', required=True, help='CREDHIST file')
+    credhist.add_argument('-key', action='store', help='Specific key to use for decryption')
+    credhist.add_argument('-password', action='store', help='User\'s password')
+    credhist.add_argument('-entry', action='store', type=int, help='Entry index in CREDHIST')
 
     options = parser.parse_args()
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     if len(sys.argv)==1:
         parser.print_help()
         sys.exit(1)
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
-
 
     try:
         executer = DPAPI(options)

@@ -1,20 +1,23 @@
-# Copyright (c) 2013-2017 CORE Security Technologies
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Protocol Client Base Class definition
+# Description:
+#   Protocol Client Base Class definition
+#   Defines a base class for all clients + loads all available modules
 #
 # Author:
-#  Alberto Solino (@agsolino)
+#   Alberto Solino (@agsolino)
 #
-# Description:
-#  Defines a base class for all clients + loads all available modules
-#
-# ToDo:
-#
-import os, sys, pkg_resources
+import os, sys
+from importlib.resources import files
+from threading import Lock
 from impacket import LOG
 
 PROTOCOL_CLIENTS = {}
@@ -24,6 +27,8 @@ PROTOCOL_CLIENTS = {}
 # writing a plugin for protocol clients:
 # PROTOCOL_CLIENT_CLASS = "<name of the class for the plugin>"
 # PLUGIN_NAME must be the protocol name that will be matched later with the relay targets (e.g. SMB, LDAP, etc)
+client_idx = 0
+lock = Lock()
 class ProtocolClient:
     PLUGIN_NAME = 'PROTOCOL'
     def __init__(self, serverConfig, target, targetPort, extendedSecurity=True):
@@ -93,7 +98,15 @@ class ProtocolClient:
         # By default, raise exception
         raise RuntimeError('Virtual Function')
 
-for file in pkg_resources.resource_listdir('impacket.examples.ntlmrelayx', 'clients'):
+    def setClientId(self):
+        with lock:
+            global client_idx
+            client_idx += 1
+            self.client_id = client_idx
+
+
+clients_path = files('impacket.examples.ntlmrelayx').joinpath('clients')
+for file in [f.name for f in clients_path.iterdir() if f.is_file()]:
     if file.find('__') >= 0 or file.endswith('.py') is False:
         continue
     # This seems to be None in some case (py3 only)

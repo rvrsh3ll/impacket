@@ -1,17 +1,21 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Config utilities
+# Description:
+#   Config utilities
+#
+#   Helpful enum methods for discovering local admins through SAMR and LSAT
 #
 # Author:
-#  Ronnie Flathers / @ropnop
+#   Ronnie Flathers / @ropnop
 #
-# Description:
-#     Helpful enum methods for discovering local admins through SAMR and LSAT
-
 from impacket.dcerpc.v5 import transport, lsat, samr, lsad
 from impacket.dcerpc.v5.dtypes import MAXIMUM_ALLOWED
 

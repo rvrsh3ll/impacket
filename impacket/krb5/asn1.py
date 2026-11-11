@@ -1,3 +1,23 @@
+# Impacket - Collection of Python classes for working with network protocols.
+#
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
+# of the Apache Software License. See the accompanying LICENSE file
+# for more information.
+#
+# Description:
+#   Changed some of the classes names to match the RFC 4120
+#   Added [MS-KILE] data
+#   Adapted to Enum
+#
+# Author:
+#   Altered source by Alberto Solino (@agsolino)
+#
+# Copyright and license note from asn1.py:
+#
 # Copyright (c) 2013, Marc Horowitz
 # All rights reserved.
 #
@@ -24,15 +44,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-# Altered source by Alberto Solino (@agsolino)
-#
-# Changed some of the classes names to match the RFC 4120
-# Added [MS-KILE] data
-# Adapted to Enum
-#
-
-
 from pyasn1.type import tag, namedtype, univ, constraint, char, useful
+from pyasn1_modules.rfc5280 import AlgorithmIdentifier, SubjectPublicKeyInfo
 
 from . import constants
 
@@ -62,6 +75,18 @@ def _sequence_component(name, tag_value, type, **subkwargs):
 def _sequence_optional_component(name, tag_value, type, **subkwargs):
     return namedtype.OptionalNamedType(name, type.subtype(
         explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple,
+                            tag_value),
+        **subkwargs))
+
+def sequence_implicit_component(name, tag_value, type, **subkwargs):
+    return namedtype.NamedType(name, type.subtype(
+        implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple,
+                            tag_value),
+        **subkwargs))
+
+def sequence_optional_implicit_component(name, tag_value, type, **subkwargs):
+    return namedtype.OptionalNamedType(name, type.subtype(
+        implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple,
                             tag_value),
         **subkwargs))
 
@@ -113,7 +138,7 @@ class KerberosString(char.GeneralString):
     # TODO marc: I'm not sure how to express this constraint in the API.
     # For now, we will be liberal in what we accept.
     # subtypeSpec = constraint.PermittedAlphabetConstraint(char.IA5String())
-    pass
+    encoding = 'utf-8'
 
 class Realm(KerberosString):
     pass
@@ -322,6 +347,15 @@ class AP_REQ(univ.Sequence):
         _sequence_component('authenticator', 4, EncryptedData())
         )
 
+class GSSAPIHeader_KRB5_AP_REQ(univ.Sequence):
+    tagSet = univ.Sequence.tagSet.tagImplicitly(tag.Tag(tag.tagClassApplication, tag.tagFormatConstructed, 0))
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType('tokenOid', univ.ObjectIdentifier()),
+        # Actualy this is a constant 0x0001, but this decodes as an asn1 boolean
+        namedtype.NamedType('krb5_ap_req', univ.Boolean()),
+        namedtype.NamedType('apReq', AP_REQ()),
+    )
+
 class AP_REP(univ.Sequence):
     tagSet = _application_tag(constants.ApplicationTagNumbers.AP_REP.value)
     componentType = namedtype.NamedTypes(
@@ -432,10 +466,10 @@ class KRB_ERROR(univ.Sequence):
         )
 
 class TYPED_DATA(univ.SequenceOf):
-    componentType = namedtype.NamedTypes(
+    componentType = univ.Sequence(componentType=namedtype.NamedTypes(
         _sequence_component('data-type', 0, Int32()),
         _sequence_optional_component('data-value', 1, univ.OctetString()),
-    )
+        ))
 
 class PA_ENC_TIMESTAMP(EncryptedData):
     pass
@@ -507,3 +541,124 @@ class KERB_KEY_LIST_REQ(univ.SequenceOf):
 
 class KERB_KEY_LIST_REP(univ.SequenceOf):
     componentType = EncryptionKey()
+
+class KERB_SUPERSEDED_BY_USER(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('name', 0, PrincipalName()),
+        _sequence_optional_component('userRealm', 1, Realm()),
+    )
+
+class S4UUserID(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('nonce', 0,  UInt32()),
+        _sequence_component('cname', 1, PrincipalName()),
+        _sequence_optional_component('crealm', 2, Realm()),
+        _sequence_optional_component('subject-certificate', 3, univ.OctetString()),
+        _sequence_optional_component('options', 4, KerberosFlags())
+    )
+
+class PA_S4U_X509_USER(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType('user-id', S4UUserID().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 0))),
+        namedtype.NamedType('checksum', Checksum().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 1))))
+    
+class KERB_DMSA_KEY_PACKAGE(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component("current-keys", 0, univ.SequenceOf(componentType=EncryptionKey())),
+        _sequence_optional_component("previous-keys", 1, univ.SequenceOf(componentType=EncryptionKey())),
+        _sequence_component("effective-time", 2, KerberosTime()),
+        _sequence_optional_component("reserved", 3, univ.OctetString()),
+        _sequence_component("expiration-time", 4, KerberosTime())
+        )
+
+# RFC 4556 (PKINIT): Every type below is EXPLICIT tagged unless the module marks it IMPLICIT.
+class DHNonce(univ.OctetString):
+    pass
+
+class ExternalPrincipalIdentifier(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        sequence_optional_implicit_component('subjectName', 0, univ.OctetString()),
+        sequence_optional_implicit_component('issuerAndSerialNumber', 1, univ.OctetString()),
+        sequence_optional_implicit_component('subjectKeyIdentifier', 2, univ.OctetString())
+        )
+
+class TD_TRUSTED_CERTIFIERS(univ.SequenceOf):
+    componentType = ExternalPrincipalIdentifier()
+
+class TD_INVALID_CERTIFICATES(univ.SequenceOf):
+    componentType = ExternalPrincipalIdentifier()
+
+class AD_INITIAL_VERIFIED_CAS(univ.SequenceOf):
+    componentType = ExternalPrincipalIdentifier()
+
+class TD_DH_PARAMETERS(univ.SequenceOf):
+    componentType = AlgorithmIdentifier()
+
+class KRB5PrincipalName(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('realm', 0, Realm()),
+        _sequence_component('principalName', 1, PrincipalName())
+        )
+
+# draft-rische-kitten-pkinit-crypto-deprec: the checksum KDCs ask for once SHA-1 is disabled
+class PAChecksum2(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('checksum', 0, univ.OctetString()),
+        _sequence_component('algorithmIdentifier', 1, AlgorithmIdentifier())
+        )
+
+class PKAuthenticator(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('cusec', 0, Microseconds()),
+        _sequence_component('ctime', 1, KerberosTime()),
+        _sequence_component('nonce', 2, UInt32()),
+        _sequence_optional_component('paChecksum', 3, univ.OctetString()),
+        _sequence_optional_component('freshnessToken', 4, univ.OctetString()),
+        _sequence_optional_component('paChecksum2', 5, PAChecksum2())
+        )
+
+class AuthPack(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('pkAuthenticator', 0, PKAuthenticator()),
+        _sequence_optional_component('clientPublicValue', 1, SubjectPublicKeyInfo()),
+        _sequence_optional_component('supportedCMSTypes', 2,
+                                     univ.SequenceOf(componentType=AlgorithmIdentifier())),
+        _sequence_optional_component('clientDHNonce', 3, DHNonce())
+        )
+
+class PA_PK_AS_REQ(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        sequence_implicit_component('signedAuthPack', 0, univ.OctetString()),
+        _sequence_optional_component('trustedCertifiers', 1,
+                                     univ.SequenceOf(componentType=ExternalPrincipalIdentifier())),
+        sequence_optional_implicit_component('kdcPkId', 2, univ.OctetString())
+        )
+
+class DHRepInfo(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        sequence_implicit_component('dhSignedData', 0, univ.OctetString()),
+        _sequence_optional_component('serverDHNonce', 1, DHNonce())
+        )
+
+class PA_PK_AS_REP(univ.Choice):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('dhInfo', 0, DHRepInfo()),
+        sequence_implicit_component('encKeyPack', 1, univ.OctetString())
+        )
+
+class KDCDHKeyInfo(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('subjectPublicKey', 0, univ.BitString()),
+        _sequence_component('nonce', 1, UInt32()),
+        _sequence_optional_component('dhKeyExpiration', 2, KerberosTime())
+        )
+
+class ReplyKeyPack(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        _sequence_component('replyKey', 0, EncryptionKey()),
+        _sequence_component('asChecksum', 1, Checksum())
+        )
+
+# RFC 4557 (OCSP support for PKINIT): Each OcspResponse is a complete DER encoded OCSP response.
+class PKOcspData(univ.SequenceOf):
+    componentType = univ.OctetString()

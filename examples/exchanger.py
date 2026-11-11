@@ -1,27 +1,30 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2020 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
+#
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
 #
 # This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author:
-#  Arseniy Sharoglazov <mohemiv@gmail.com> / Positive Technologies (https://www.ptsecurity.com/)
-#
 # Description:
-#  A tool for connecting to MS Exchange via RPC over HTTP v2
+#   A tool for connecting to MS Exchange via RPC over HTTP v2
 #
-# Notes about -rpc-hostname:
-#  Our RPC over HTTP v2 implementation tries to extract the
-#  target's NetBIOS name via NTLMSSP and use it as RPC Server name.
-#  If it fails, you have to manually get the target RPC Server name
-#  from the Autodiscover service and set it in the -rpc-hostname parameter.
+#   Notes about -rpc-hostname:
+#     Our RPC over HTTP v2 implementation tries to extract the
+#     target's NetBIOS name via NTLMSSP and use it as RPC Server name.
+#     If it fails, you have to manually get the target RPC Server name
+#     from the Autodiscover service and set it in the -rpc-hostname parameter.
+#
+# Author:
+#   Arseniy Sharoglazov <mohemiv@gmail.com> / Positive Technologies (https://www.ptsecurity.com/)
 #
 # References:
-#  https://swarm.ptsecurity.com/attacking-ms-exchange-web-interfaces/
+#   - https://swarm.ptsecurity.com/attacking-ms-exchange-web-interfaces/
 #
 
-from __future__ import print_function
 import base64
 import codecs
 import logging
@@ -231,6 +234,8 @@ class NSPIAttacks(Exchanger):
         self.__handler = None
 
         self.htable = {}
+        self.anyExistingContainerID = -1
+
         self.props = list()
         self.stat = nspi.STAT()
         self.stat['CodePage'] = nspi.CP_TELETEX
@@ -253,6 +258,9 @@ class NSPIAttacks(Exchanger):
         # consistency check at target level 6.0, as specified in [MS-RPCE].
         self.__dce.set_credentials(self._username, self._password, self._domain,
                                    self._lmhash, self._nthash)
+        if options.basic:
+            self._rpctransport.set_auth_type(AUTH_BASIC)
+
         self.__dce.set_auth_level(6)
 
         self.__dce.connect()
@@ -280,6 +288,20 @@ class NSPIAttacks(Exchanger):
             self.update_stat(MId)
             self.htable[MId]['count'] = self.stat['TotalRecs']
             self.htable[MId]['start_mid'] = self.stat['CurrentRec']
+
+    def load_htable_containerid(self):
+        if self.anyExistingContainerID != -1:
+            return
+
+        if self.htable == {}:
+            self.load_htable()
+
+        for MId in self.htable:
+            self.update_stat(MId)
+
+            if self.stat['CurrentRec'] > 0:
+                self.anyExistingContainerID = NSPIAttacks._int_to_dword(MId)
+                return
 
     def _parse_and_set_htable(self, htable):
         self.htable = {}
@@ -442,6 +464,9 @@ class NSPIAttacks(Exchanger):
         printOnlyGUIDs = False
         useAsExplicitTable = False
 
+        if self.anyExistingContainerID == -1:
+            self.load_htable_containerid()
+
         if table_MId == None and eTable == None:
             raise Exception("Wrong arguments!")
         elif table_MId != None and eTable != None:
@@ -529,7 +554,7 @@ class NSPIAttacks(Exchanger):
                     eTableInt = eTable
 
                 resp = nspi.hNspiQueryRows(self.__dce, self.__handler,
-                    ContainerID=0, Count=count, pPropTags=attrs, lpETable=eTableInt)
+                    ContainerID=self.anyExistingContainerID, Count=count, pPropTags=attrs, lpETable=eTableInt)
 
                 try:
                     # Addressing to PropertyRowSet_r must be inside try / except,
@@ -851,9 +876,6 @@ class ExchangerHelper:
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
-
     # Explicitly changing the stdout encoding format
     if sys.stdout.encoding is None:
         # Output is redirected to a file
@@ -875,6 +897,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help=True, description="A tool to abuse Exchange services")
     parser.add_argument('target', action='store', help='[[domain/]username[:password]@]<targetName or address>')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG and EXTENDED output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
     #parser.add_argument('-transport', choices=['RPC', 'MAPI'], nargs='?', default='RPC', help='Protocol to use')
     parser.add_argument('-rpc-hostname', action='store', help='A name of the server in GUID (preferred) '
         'or NetBIOS name format (see description in the beggining of this file)')
@@ -898,6 +921,7 @@ if __name__ == '__main__':
 
     list_tables = nspi_attacks.add_parser('list-tables', help='List Address Books')
     list_tables.add_argument('-count', action='store_true', help='Request total number of records in each table')
+    parser.add_argument('-basic', action='store_true', help='Authenticate with Basic Auth instead of NTLM')
 
 
     dump_tables = nspi_attacks.add_parser('dump-tables', formatter_class=SmartFormatter, help='Dump Address Books')
@@ -937,7 +961,7 @@ if __name__ == '__main__':
     guid_known.add_argument('-output-file', action='store', help='Output filename')
 
     dnt_lookup = nspi_attacks.add_parser('dnt-lookup', formatter_class=SmartFormatter, help='Lookup Distinguished Name Tags')
-    dnt_lookup.add_argument('-lookup-type', choices=['EXTENDED', 'FULL', 'GUIDS'], nargs='?', default='MINIMAL',
+    dnt_lookup.add_argument('-lookup-type', choices=['EXTENDED', 'FULL', 'GUIDS'], nargs='?', default='EXTENDED',
         help='R|Lookup type:\n'
              '  EXTENDED - Request extended set of fields (default)\n'
              '  FULL     - Request all fields for each row\n'
@@ -959,13 +983,8 @@ if __name__ == '__main__':
         sys.exit(1)
 
     options = parser.parse_args()
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     domain, username, password, remoteName = parse_target(options.target)
 

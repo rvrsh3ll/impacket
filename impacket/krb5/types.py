@@ -1,3 +1,15 @@
+# Impacket - Collection of Python classes for working with network protocols.
+#
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
+# of the Apache Software License. See the accompanying LICENSE file
+# for more information.
+#
+# Copyright and license note from types.py:
+#
 # Copyright (c) 2013, Marc Horowitz
 # All rights reserved.
 #
@@ -23,13 +35,14 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+#
 import datetime
 import socket
 import re
 import struct
 
 from pyasn1.codec.der import decoder
+from six import ensure_binary
 
 from . import asn1
 from . import constants
@@ -141,7 +154,7 @@ If the value contains no realm, then default_realm will be used."""
         strings = name.setComponentByName('name-string'
                                           ).getComponentByName('name-string')
         for i, c in enumerate(self.components):
-            strings.setComponentByPosition(i, c)
+            strings.setComponentByPosition(i, ensure_binary(c))
 
         return name
 
@@ -196,7 +209,7 @@ class EncryptedData(object):
         if (kvno is None) or (kvno.hasValue() is False):
             self.kvno = False
         else:
-            self.kvno = True
+            self.kvno = kvno
         self.ciphertext = str(data.getComponentByName('cipher'))
         return self
 

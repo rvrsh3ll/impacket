@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author:
-#  beto (@agsolino)
 #
 # Description:
 #   The idea of this script is to get a list of the sessions
@@ -14,21 +15,21 @@
 #   Coincidentally @mubix did something similar a few years
 #   ago so credit goes to him (and the script's name ;)).
 #   Check it out at https://github.com/mubix/netview
-#   The main difference with our approach is we keep 
+#   The main difference with our approach is we keep
 #   looping over the hosts found and keep track of who logged
 #   in/out from remote servers. Plus, we keep the connections
 #   with the target systems and just send a few DCE-RPC packets.
 #
 #   One VERY IMPORTANT thing is:
-#   
-#   YOU HAVE TO BE ABLE TO RESOLV THE DOMAIN MACHINES NETBIOS 
-#   NAMES. That's usually solved by setting your DNS to the 
+#
+#   YOU HAVE TO BE ABLE TO RESOLV THE DOMAIN MACHINES NETBIOS
+#   NAMES. That's usually solved by setting your DNS to the
 #   domain DNS (and the right search domain).
-#   
+#
 #   Some examples of usage are:
 #
 #   netview.py -target 192.168.1.10 beto
-#   
+#
 #   This will show the sessions on 192.168.1.10 and will authenticate as 'beto'
 #   (password will be prompted)
 #
@@ -40,14 +41,15 @@
 #   at all times.
 #
 #   netview.py -users /tmp/users -dc-ip freefly-dc.freefly.net -k FREEFLY.NET/beto
-#  
+#
 #   This will download all machines from FREEFLY.NET, authenticating using
 #   Kerberos (that's why -dc-ip parameter is needed), and filter
 #   the output based on the list of users specified in /tmp/users file.
 #
+# Author:
+#   beto (@agsolino)
 #
-from __future__ import division
-from __future__ import print_function
+
 import sys
 import argparse
 import logging
@@ -57,7 +59,7 @@ from queue import Queue
 from time import sleep
 
 from impacket.examples import logger
-from impacket.examples.utils import parse_credentials
+from impacket.examples.utils import parse_identity
 from impacket import version
 from impacket.smbconnection import SessionError
 from impacket.dcerpc.v5 import transport, wkst, srvs, samr
@@ -323,11 +325,11 @@ class USERENUM:
                     # Are we filtering users?
                     if self.__filterUsers is not None:
                         if userName in self.__filterUsers:
-                            print("%s: user %s logged from host %s - active: %d, idle: %d" % (
+                            logging.info("%s: user %s logged from host %s - active: %d, idle: %d" % (
                             target, userName, sourceIP, session['sesi10_time'], session['sesi10_idle_time']))
                             printCRLF = True
                     else:
-                        print("%s: user %s logged from host %s - active: %d, idle: %d" % (
+                        logging.info("%s: user %s logged from host %s - active: %d, idle: %d" % (
                         target, userName, sourceIP, session['sesi10_time'], session['sesi10_idle_time']))
                         printCRLF = True
 
@@ -339,10 +341,10 @@ class USERENUM:
                 # Are we filtering users?
                 if self.__filterUsers is not None:
                     if userName in self.__filterUsers:
-                        print("%s: user %s logged off from host %s" % (target, userName, sourceIP))
+                        logging.info("%s: user %s logged off from host %s" % (target, userName, sourceIP))
                         printCRLF=True
                 else:
-                    print("%s: user %s logged off from host %s" % (target, userName, sourceIP))
+                    logging.info("%s: user %s logged off from host %s" % (target, userName, sourceIP))
                     printCRLF=True
                 
         if printCRLF is True:
@@ -405,10 +407,10 @@ class USERENUM:
                 # Are we filtering users?
                 if self.__filterUsers is not None:
                     if userName in self.__filterUsers:
-                        print("%s: user %s\\%s logged in LOCALLY" % (target,logonDomain,userName))
+                        logging.info("%s: user %s\\%s logged in LOCALLY" % (target,logonDomain,userName))
                         printCRLF=True
                 else:
-                    print("%s: user %s\\%s logged in LOCALLY" % (target,logonDomain,userName))
+                    logging.info("%s: user %s\\%s logged in LOCALLY" % (target,logonDomain,userName))
                     printCRLF=True
 
         # Let's see who logged out since last check
@@ -419,10 +421,10 @@ class USERENUM:
                 # Are we filtering users?
                 if self.__filterUsers is not None:
                     if userName in self.__filterUsers:
-                        print("%s: user %s\\%s logged off LOCALLY" % (target,logonDomain,userName))
+                        logging.info("%s: user %s\\%s logged off LOCALLY" % (target,logonDomain,userName))
                         printCRLF=True
                 else:
-                    print("%s: user %s\\%s logged off LOCALLY" % (target,logonDomain,userName))
+                    logging.info("%s: user %s\\%s logged off LOCALLY" % (target,logonDomain,userName))
                     printCRLF=True
                 
         if printCRLF is True:
@@ -475,28 +477,11 @@ if __name__ == '__main__':
     options = parser.parse_args()
 
     # Init the example's logger theme
-    logger.init(options.ts)
+    logger.init(options.ts, options.debug)
 
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
-
-    domain, username, password = parse_credentials(options.identity)
+    domain, username, password, _, _, options.k = parse_identity(options.identity, options.hashes, options.no_pass, options.aesKey, options.k)
 
     try:
-        if domain is None:
-            domain = ''
-
-        if password == '' and username != '' and options.hashes is None and options.no_pass is False and options.aesKey is None:
-            from getpass import getpass
-            password = getpass("Password:")
-
-        if options.aesKey is not None:
-            options.k = True
-
         executer = USERENUM(username, password, domain, options.hashes, options.aesKey, options.k, options)
         executer.run()
     except Exception as e:

@@ -1,24 +1,27 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# SOCKS proxy server/client
-#
-# Author:
-#  Alberto Solino (@agsolino)
-#
 # Description:
+#   SOCKS proxy server/client
+#
 #  A simple SOCKS server that proxy connection to relayed connections
 #
+# Author:
+#   Alberto Solino (@agsolino)
+#
 # ToDo:
-# [ ] Handle better the SOCKS specification (RFC1928), e.g. BIND
-# [ ] Port handlers should be dynamically subscribed, and coded in another place. This will help coding
-#     proxies for different protocols (e.g. MSSQL)
-from __future__ import division
-from __future__ import print_function
+#   [ ] Handle better the SOCKS specification (RFC1928), e.g. BIND
+#   [ ] Port handlers should be dynamically subscribed, and coded in another place. This will help coding
+#       proxies for different protocols (e.g. MSSQL)
+#
 import socketserver
 import socket
 import time
@@ -212,7 +215,7 @@ def activeConnectionsWatcher(server):
             server.activeRelays[target][port] = {}
 
         if (userName in server.activeRelays[target][port]) is not True:
-            LOG.info('SOCKS: Adding %s@%s(%s) to active SOCKS connection. Enjoy' % (userName, target, port))
+            LOG.info('SOCKS: Adding %s://%s@%s(%s) [%s] to active SOCKS connection. Enjoy' % (scheme, userName, target, port, client.client_id))
             server.activeRelays[target][port][userName] = {}
             # This is the protocolClient. Needed because we need to access the killConnection from time to time.
             # Inside this instance, you have the session attribute pointing to the relayed session.
@@ -240,36 +243,41 @@ def activeConnectionsWatcher(server):
             LOG.info('Relay connection for %s at %s(%d) already exists. Discarding' % (userName, target, port))
             client.killConnection()
 
-def webService(server):
-    from flask import Flask, jsonify
 
-    app = Flask(__name__)
+def webService(addr, port):
+    def _webService(server):
+        from flask import Flask, jsonify
 
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
+        app = Flask(__name__)
 
-    @app.route('/')
-    def index():
-        print(server.activeRelays)
-        return "Relays available: %s!" % (len(server.activeRelays))
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
 
-    @app.route('/ntlmrelayx/api/v1.0/relays', methods=['GET'])
-    def get_relays():
-        relays = []
-        for target in server.activeRelays:
-            for port in server.activeRelays[target]:
-                for user in server.activeRelays[target][port]:
-                    if user != 'data' and user != 'scheme':
-                        protocol = server.activeRelays[target][port]['scheme']
-                        isAdmin = server.activeRelays[target][port][user]['isAdmin']
-                        relays.append([protocol, target, user, isAdmin, str(port)])
-        return jsonify(relays)
+        @app.route('/')
+        def index():
+            print(server.activeRelays)
+            return "Relays available: %s!" % (len(server.activeRelays))
 
-    @app.route('/ntlmrelayx/api/v1.0/relays', methods=['GET'])
-    def get_info(relay):
-        pass
+        @app.route('/ntlmrelayx/api/v1.0/relays', methods=['GET'])
+        def get_relays():
+            relays = []
+            for target in server.activeRelays:
+                for port in server.activeRelays[target]:
+                    for user in server.activeRelays[target][port]:
+                        if user != 'data' and user != 'scheme':
+                            client_id = server.activeRelays[target][port][user]['protocolClient'].client_id
+                            protocol = server.activeRelays[target][port]['scheme']
+                            isAdmin = server.activeRelays[target][port][user]['isAdmin']
+                            relays.append([protocol, target, user, isAdmin, str(port), str(client_id)])
+            return jsonify(relays)
 
-    app.run(host='0.0.0.0', port=9090)
+        @app.route('/ntlmrelayx/api/v1.0/relays', methods=['GET'])
+        def get_info(relay):
+            pass
+
+        app.run(host=addr, port=port)
+
+    return _webService
 
 class SocksRequestHandler(socketserver.BaseRequestHandler):
     def __init__(self, request, client_address, server):
@@ -316,8 +324,8 @@ class SocksRequestHandler(socketserver.BaseRequestHandler):
                 self.targetHost = socket.inet_ntoa(request['PAYLOAD'][:4])
                 self.targetPort = unpack('>H',request['PAYLOAD'][4:])[0]
             elif request['ATYP'] == ATYP.DOMAINNAME.value:
-                hostLength = unpack('!B',request['PAYLOAD'][0])[0]
-                self.targetHost = request['PAYLOAD'][1:hostLength+1]
+                hostLength = unpack('!B',request['PAYLOAD'][:1])[0]
+                self.targetHost = request['PAYLOAD'][1:hostLength+1].decode(encoding='utf-8')
                 self.targetPort = unpack('>H',request['PAYLOAD'][hostLength+1:])[0]
             else:
                 LOG.error('No support for IPv6 yet!')
@@ -396,6 +404,7 @@ class SocksRequestHandler(socketserver.BaseRequestHandler):
             LOG.debug('Handler for port %s found %s' % (self.targetPort, self.__socksServer.socksPlugins[scheme]))
             relay = self.__socksServer.socksPlugins[scheme](self.targetHost, self.targetPort, self.__connSocket,
                                   self.__socksServer.activeRelays[self.targetHost][self.targetPort])
+            session_completed = False
 
             try:
                 relay.initConnection()
@@ -422,6 +431,7 @@ class SocksRequestHandler(socketserver.BaseRequestHandler):
                 self.__socksServer.activeRelays[self.targetHost][self.targetPort][relay.username]['inUse'] = True
 
                 relay.tunnelConnection()
+                session_completed = True
             except Exception as e:
                 LOG.debug("Exception:", exc_info=True)
                 LOG.debug('SOCKS: %s' % str(e))
@@ -435,10 +445,15 @@ class SocksRequestHandler(socketserver.BaseRequestHandler):
                     self.sendReplyError(replyField.CONNECTION_REFUSED)
                     return
                 pass
+            finally:
+                # Freeing up this connection
+                if relay.username is not None:
+                    port_relays = self.__socksServer.activeRelays.get(self.targetHost, {}).get(self.targetPort, {})
+                    if relay.username in port_relays:
+                        port_relays[relay.username]['inUse'] = False
 
-            # Freeing up this connection
-            if relay.username is not None:
-                self.__socksServer.activeRelays[self.targetHost][self.targetPort][relay.username]['inUse'] = False
+            if session_completed:
+                return
         else:
             LOG.error('SOCKS: I don\'t have a handler for this port')
 
@@ -450,8 +465,8 @@ class SocksRequestHandler(socketserver.BaseRequestHandler):
 
 
 class SOCKS(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    def __init__(self, server_address=('0.0.0.0', 1080), handler_class=SocksRequestHandler):
-        LOG.info('SOCKS proxy started. Listening at port %d', server_address[1] )
+    def __init__(self, server_address=('127.0.0.1', 1080), handler_class=SocksRequestHandler, api_port=9090):
+        LOG.info('SOCKS proxy started. Listening on %s:%d', server_address[0], server_address[1])
 
         self.activeRelays = {}
         self.socksPlugins = {}
@@ -473,7 +488,7 @@ class SOCKS(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.__timer = RepeatedTimer(KEEP_ALIVE_TIMER, keepAliveTimer, self)
 
         # Let's start our RESTful API
-        self.restAPI = Thread(target=webService, args=(self, ))
+        self.restAPI = Thread(target=webService(server_address[0], api_port), args=(self, ))
         self.restAPI.daemon = True
         self.restAPI.start()
 

@@ -1,25 +1,28 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   [MS-SRVS] Interface implementation
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
+#   at https://github.com/fortra/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
-#   They are located at the end of this file. 
+#   They are located at the end of this file.
 #   Helper functions start with "h"<name of the call>.
-#   There are test cases for them too. 
+#   There are test cases for them too.
 #
-from __future__ import division
-from __future__ import print_function
+# Author:
+#   Alberto Solino (@agsolino)
+#
 from impacket.dcerpc.v5.rpcrt import DCERPCException
 from impacket.dcerpc.v5.ndr import NDRCALL, NDR, NDRSTRUCT, NDRUNION, NDRPOINTER, NDRUniConformantArray, \
     NDRUniFixedArray, NDRBOOLEAN, NDRUniConformantVaryingArray, PNDRUniConformantArray
@@ -1765,11 +1768,10 @@ class WCHAR_ARRAY(NDRSTRUCT):
 
     def __setitem__(self, key, value):
         if key == 'Data':
-            try:
-                self.fields[key] = value.encode('utf-16le')
-            except UnicodeDecodeError:
+            if isinstance(value, bytes):
                 import sys
-                self.fields[key] = value.decode(sys.getfilesystemencoding()).encode('utf-16le')
+                value = value.decode(sys.getfilesystemencoding())
+            self.fields[key] = value.encode('utf-16le')
             self.fields['ActualCount'] = None
             self.data = None        # force recompute
         else:
@@ -3092,9 +3094,12 @@ def hNetrShareDel(dce, netName):
     request['NetName'] = netName
     return dce.request(request)
 
-def hNetrShareEnum(dce, level, resumeHandle = 0, preferedMaximumLength = 0xffffffff):
+def hNetrShareEnum(dce, level, resumeHandle = 0, preferedMaximumLength = 0xffffffff, serverName = '\x00'):
+    # serverName example: "\\\\1.2.3.4\x00"
+    if serverName[-1] != '\x00':
+        serverName += '\x00'  # final NULL byte is mandatory
     request = NetrShareEnum()
-    request['ServerName'] = '\x00'
+    request['ServerName'] = serverName
     request['PreferedMaximumLength'] = preferedMaximumLength
     request['ResumeHandle'] = resumeHandle
     request['InfoStruct']['Level'] = level

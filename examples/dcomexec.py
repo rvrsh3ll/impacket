@@ -1,37 +1,41 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# A similar approach to psexec but executing commands through DCOM.
-# You can select different objects to be used to execute the commands.
-# Currently supported objects are:
-#    1. MMC20.Application (49B2791A-B1AE-4C90-9B8E-E860BA07F889) - Tested Windows 7, Windows 10, Server 2012R2
-#    2. ShellWindows (9BA05972-F6A8-11CF-A442-00A0C90A8F39) - Tested Windows 7, Windows 10, Server 2012R2
-#    3. ShellBrowserWindow (C08AFD90-F2A1-11D1-8455-00A0C91F3880) - Tested Windows 10, Server 2012R2
+# Description:
+#   A similar approach to psexec but executing commands through DCOM.
+#   You can select different objects to be used to execute the commands.
+#   Currently supported objects are:
+#     1. MMC20.Application (49B2791A-B1AE-4C90-9B8E-E860BA07F889) - Tested Windows 7, Windows 10, Server 2012R2
+#     2. ShellWindows (9BA05972-F6A8-11CF-A442-00A0C90A8F39) - Tested Windows 7, Windows 10, Server 2012R2
+#     3. ShellBrowserWindow (C08AFD90-F2A1-11D1-8455-00A0C91F3880) - Tested Windows 10, Server 2012R2
 #
-# Drawback is it needs DCOM, hence, I have to be able to access
-# DCOM ports at the target machine.
+#   Drawback is it needs DCOM, hence, I have to be able to access
+#   DCOM ports at the target machine.
 #
-# Original discovery by Matt Nelson (@enigma0x3):
-# https://enigma0x3.net/2017/01/05/lateral-movement-using-the-mmc20-application-com-object/
-# https://enigma0x3.net/2017/01/23/lateral-movement-via-dcom-round-2/
+#   Original discovery by Matt Nelson (@enigma0x3):
+#   https://enigma0x3.net/2017/01/05/lateral-movement-using-the-mmc20-application-com-object/
+#   https://enigma0x3.net/2017/01/23/lateral-movement-via-dcom-round-2/
 #
 # Author:
-#  beto (@agsolino)
-#  Marcello (@byt3bl33d3r)
+#   beto (@agsolino)
+#   Marcello (@byt3bl33d3r)
 #
 # Reference for:
 #  DCOM
 #
 # ToDo:
-# [ ] Kerberos auth not working, invalid_checksum is thrown. Most probably sequence numbers out of sync due to
-#     getInterface() method
+#   [ ] Kerberos auth not working, invalid_checksum is thrown. Most probably sequence numbers out of sync due to
+#       getInterface() method
 #
-from __future__ import division
-from __future__ import print_function
+
 import argparse
 import cmd
 import logging
@@ -45,7 +49,7 @@ from six import PY2, PY3
 from impacket import version
 from impacket.dcerpc.v5.dcom.oaut import IID_IDispatch, string_to_bin, IDispatch, DISPPARAMS, DISPATCH_PROPERTYGET, \
     VARIANT, VARENUM, DISPATCH_METHOD
-from impacket.dcerpc.v5.dcomrt import DCOMConnection
+from impacket.dcerpc.v5.dcomrt import DCOMConnection, COMVERSION
 from impacket.dcerpc.v5.dcomrt import OBJREF, FLAGS_OBJREF_CUSTOM, OBJREF_CUSTOM, OBJREF_HANDLER, \
     OBJREF_EXTENDED, OBJREF_STANDARD, FLAGS_OBJREF_HANDLER, FLAGS_OBJREF_STANDARD, FLAGS_OBJREF_EXTENDED, \
     IRemUnknown2, INTERFACE
@@ -98,8 +102,8 @@ class DCOMEXEC:
                       oxid=objRef['std']['oxid'], oid=objRef['std']['oxid'],
                       target=interface.get_target()))
 
-    def run(self, addr):
-        if self.__noOutput is False:
+    def run(self, addr, silentCommand=False):
+        if self.__noOutput is False and silentCommand is False:
             smbConnection = SMBConnection(addr, addr)
             if self.__doKerberos is False:
                 smbConnection.login(self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash)
@@ -163,17 +167,21 @@ class DCOMEXEC:
 
                 iActiveView = IDispatch(self.getInterface(iMMC, resp['pVarResult']['_varUnion']['pdispVal']['abData']))
                 pExecuteShellCommand = iActiveView.GetIDsOfNames(('ExecuteShellCommand',))[0]
-                self.shell = RemoteShellMMC20(self.__share, (iMMC, pQuit), (iActiveView, pExecuteShellCommand), smbConnection, self.__shell_type)
+                self.shell = RemoteShellMMC20(self.__share, (iMMC, pQuit), (iActiveView, pExecuteShellCommand), smbConnection, self.__shell_type, silentCommand)
             else:
                 resp = iDocument.GetIDsOfNames(('Application',))
                 resp = iDocument.Invoke(resp[0], 0x409, DISPATCH_PROPERTYGET, dispParams, 0, [], [])
 
                 iActiveView = IDispatch(self.getInterface(iMMC, resp['pVarResult']['_varUnion']['pdispVal']['abData']))
                 pExecuteShellCommand = iActiveView.GetIDsOfNames(('ShellExecute',))[0]
-                self.shell = RemoteShell(self.__share, (iMMC, pQuit), (iActiveView, pExecuteShellCommand), smbConnection, self.__shell_type)
+                self.shell = RemoteShell(self.__share, (iMMC, pQuit), (iActiveView, pExecuteShellCommand), smbConnection, self.__shell_type, silentCommand)
 
             if self.__command != ' ':
-                self.shell.onecmd(self.__command)
+                try:
+                    self.shell.onecmd(self.__command)
+                except TypeError:
+                    if not silentCommand:
+                        raise
                 if self.shell is not None:
                     self.shell.do_exit('')
             else:
@@ -196,7 +204,7 @@ class DCOMEXEC:
         dcom.disconnect()
 
 class RemoteShell(cmd.Cmd):
-    def __init__(self, share, quit, executeShellCommand, smbConnection, shell_type):
+    def __init__(self, share, quit, executeShellCommand, smbConnection, shell_type, silentCommand=False):
         cmd.Cmd.__init__(self)
         self._share = share
         self._output = '\\' + OUTPUT_FILENAME
@@ -207,6 +215,7 @@ class RemoteShell(cmd.Cmd):
         self.__quit = quit
         self._executeShellCommand = executeShellCommand
         self.__transferClient = smbConnection
+        self._silentCommand = silentCommand
         self._pwd = 'C:\\windows\\system32'
         self._noOutput = False
         self.intro = '[!] Launching semi-interactive shell - Careful what you execute\n[!] Press help for extra shell commands'
@@ -365,11 +374,15 @@ class RemoteShell(cmd.Cmd):
         self.__transferClient.deleteFile(self._share, self._output)
 
     def execute_remote(self, data, shell_type='cmd'):
-        if shell_type == 'powershell':
-            data = '$ProgressPreference="SilentlyContinue";' + data
-            data = self.__pwsh + b64encode(data.encode('utf-16le')).decode()
+        if self._silentCommand is True:
+            self._shell = data.split()[0]
+            command = ' '.join(data.split()[1:])
+        else:
+            if shell_type == 'powershell':
+                data = '$ProgressPreference="SilentlyContinue";' + data
+                data = self.__pwsh + b64encode(data.encode('utf-16le')).decode()
+            command = '/Q /c ' + data
 
-        command = '/Q /c ' + data
         if self._noOutput is False:
             command += ' 1> ' + '\\\\127.0.0.1\\%s' % self._share + self._output + ' 2>&1'
 
@@ -430,11 +443,15 @@ class RemoteShell(cmd.Cmd):
 
 class RemoteShellMMC20(RemoteShell):
     def execute_remote(self, data, shell_type='cmd'):
-        if shell_type == 'powershell':
-            data = '$ProgressPreference="SilentlyContinue";' + data
-            data = self._RemoteShell__pwsh + b64encode(data.encode('utf-16le')).decode()
+        if self._silentCommand is True:
+            self._shell = data.split()[0]
+            command = ' '.join(data.split()[1:])
+        else:
+            if shell_type == 'powershell':
+                data = '$ProgressPreference="SilentlyContinue";' + data
+                data = self._RemoteShell__pwsh + b64encode(data.encode('utf-16le')).decode()
+            command = '/Q /c ' + data
 
-        command = '/Q /c ' + data
         if self._noOutput is False:
             command += ' 1> ' + '\\\\127.0.0.1\\%s' % self._share + self._output  + ' 2>&1'
 
@@ -532,6 +549,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(add_help = True, description = "Executes a semi-interactive shell using the "
                                                                     "ShellBrowserWindow DCOM object.")
+
     parser.add_argument('target', action='store', help='[[domain/]username[:password]@]<targetName or address>')
     parser.add_argument('-share', action='store', default = 'ADMIN$', help='share where the output will be grabbed from '
                                                                            '(default ADMIN$)')
@@ -546,12 +564,14 @@ if __name__ == '__main__':
                           'again with -codec and the corresponding codec ' % CODEC)
     parser.add_argument('-object', choices=['ShellWindows', 'ShellBrowserWindow', 'MMC20'], nargs='?', default='ShellWindows',
                         help='DCOM object to be used to execute the shell command (default=ShellWindows)')
-
+    parser.add_argument('-com-version', action='store', metavar = "MAJOR_VERSION:MINOR_VERSION", help='DCOM version, '
+                        'format is MAJOR_VERSION:MINOR_VERSION e.g. 5.7')
     parser.add_argument('-shell-type', action='store', default = 'cmd', choices = ['cmd', 'powershell'], help='choose '
                         'a command processor for the semi-interactive shell')
-
     parser.add_argument('command', nargs='*', default = ' ', help='command to execute at the target. If empty it will '
                                                                   'launch a semi-interactive shell')
+    parser.add_argument('-silentcommand', action='store_true', default = False,
+                        help='does not execute cmd.exe to run given command (no output, cannot run dir/cd/etc.)')
 
     group = parser.add_argument_group('authentication')
 
@@ -573,9 +593,8 @@ if __name__ == '__main__':
         sys.exit(1)
 
     options = parser.parse_args()
-
     # Init the example's logger theme
-    logger.init(options.ts)
+    logger.init(options.ts, options.debug)
 
     if options.codec is not None:
         CODEC = options.codec
@@ -583,16 +602,27 @@ if __name__ == '__main__':
         if CODEC is None:
             CODEC = 'utf-8'
 
+    if options.k or options.aesKey is not None or options.keytab is not None:
+        logging.error("Kerberos authentication is not supported by dcomexec.py's current DCOM objects "
+                      "(ShellWindows, ShellBrowserWindow, MMC20). These objects are hosted in the user context "
+                      "and do not accept HOST/<target> Kerberos tickets. Use wmiexec.py -k for Kerberos command "
+                      "execution, or use dcomexec.py with NTLM password/hash authentication.")
+        sys.exit(1)
+
     if ' '.join(options.command) == ' ' and options.nooutput is True:
         logging.error("-nooutput switch and interactive shell not supported")
         sys.exit(1)
+    if options.silentcommand and options.command == ' ':
+        logging.error("-silentcommand switch and interactive shell not supported")
+        sys.exit(1)
 
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    if options.com_version is not None:
+        try:
+            major_version, minor_version = options.com_version.split('.')
+            COMVERSION.set_default_version(int(major_version), int(minor_version))
+        except Exception:
+            logging.error("Wrong COMVERSION format, use dot separated integers e.g. \"5.7\"")
+            sys.exit(1)
 
     domain, username, password, address = parse_target(options.target)
 
@@ -617,7 +647,7 @@ if __name__ == '__main__':
 
         executer = DCOMEXEC(' '.join(options.command), username, password, domain, options.hashes, options.aesKey,
                             options.share, options.nooutput, options.k, options.dc_ip, options.object, options.shell_type)
-        executer.run(address)
+        executer.run(address, options.silentcommand)
     except (Exception, KeyboardInterrupt) as e:
         if logging.getLogger().level == logging.DEBUG:
             import traceback

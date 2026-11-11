@@ -1,18 +1,22 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Config utilities
+# Description:
+#   Config utilities
+#
+#   Configuration class which holds the config specified on the
+#   command line, this can be passed to the tools' servers and clients
 #
 # Author:
 #  Dirk-jan Mollema / Fox-IT (https://www.fox-it.com)
 #
-# Description:
-#     Configuration class which holds the config specified on the
-# command line, this can be passed to the tools' servers and clients
-
 from impacket.examples.utils import parse_credentials
 
 
@@ -34,20 +38,22 @@ class NTLMRelayxConfig:
         self.mode = None
         self.redirecthost = None
         self.outputFile = None
+        self.dumpHashes = False
         self.attacks = None
         self.lootdir = None
         self.randomtargets = False
         self.encoding = None
         self.ipv6 = False
         self.remove_mic = False
+        self.remove_sign_seal = False
+        self.disableMulti = False
+        self.keepRelaying = False
+        self.https = False
+        self.certfile = None
+        self.keyfile = None
 
         self.command = None
-
-        # WPAD options
-        self.serve_wpad = False
-        self.wpad_host = None
-        self.wpad_auth_num = 0
-        self.smb2support = False
+        self.dumpLSA = False
 
         # WPAD options
         self.serve_wpad = False
@@ -60,6 +66,16 @@ class NTLMRelayxConfig:
         self.interactive = False
         self.enumLocalAdmins = False
         self.SMBServerChallenge = None
+        self.rpc_attack = None
+
+        # Signing bypass account, shared by the SMB (MS-SMB2 3.3.5.5.2) and LDAP bypasses (LDAP reuses the existing attack options)
+        self.reauth_bypass = False
+        self.reauth_anonymous = False
+        self.reauth_domain = ''
+        self.reauth_user = ''
+        self.reauth_password = ''
+        self.reauth_lmhash = ''
+        self.reauth_nthash = ''
 
         # RPC options
         self.rpc_mode = None
@@ -75,9 +91,11 @@ class NTLMRelayxConfig:
         self.aclattack = True
         self.validateprivs = True
         self.escalateuser = None
+        self.delegatetarget = None
 
         # MSSQL options
         self.queries = []
+        self.database = None
 
         # Registered protocol clients
         self.protocolClients = {}
@@ -92,8 +110,35 @@ class NTLMRelayxConfig:
         # WebDAV options
         self.serve_image = False
 
+        # AD CS attack options
+        self.isADCSAttack = False
+        self.isCESAttack = False
+        self.template = None
+        self.altName = None
+        self.altSid = None
+        self.enumTemplates = False
+
+        # Shadow Credentials attack options
+        self.IsShadowCredentialsAttack = False
+        self.ShadowCredentialsPFXPassword = None
+        self.ShadowCredentialsExportType = None
+        self.ShadowCredentialsOutfilePath = None
+        self.ShadowCredentialsReplace = False
+        self.ShadowCredentialsBackupPath = None
+
+        # SCCM attacks options
+        self.isSCCMPoliciesAttack = False
+        self.SCCMPoliciesClientname = None
+        self.SCCMPoliciesSleep = None
+        self.isSCCMDPAttack = False
+        self.SCCMDPExtensions = None
+        self.SCCMDPFiles = None
+
     def setSMBChallenge(self, value):
         self.SMBServerChallenge = value
+
+    def setSMBRPCAttack(self, value):
+        self.rpc_attack = value
 
     def setSMB2Support(self, value):
         self.smb2support = value
@@ -114,6 +159,9 @@ class NTLMRelayxConfig:
     def setOutputFile(self, outputFile):
         self.outputFile = outputFile
 
+    def setdumpHashes(self, dumpHashes):
+        self.dumpHashes = dumpHashes
+
     def setTargets(self, target):
         self.target = target
 
@@ -123,8 +171,20 @@ class NTLMRelayxConfig:
     def setCommand(self, command):
         self.command = command
 
+    def setDumpLSA(self, dumpLSA):
+        self.dumpLSA = dumpLSA
+
     def setEnumLocalAdmins(self, enumLocalAdmins):
         self.enumLocalAdmins = enumLocalAdmins
+
+    def setAddComputerSMB(self, addComputerSMB):
+        self.addComputerSMB = addComputerSMB
+
+    def setDisableMulti(self, disableMulti):
+        self.disableMulti = disableMulti
+
+    def setKeepRelaying(self, keepRelaying):
+        self.keepRelaying = keepRelaying
 
     def setEncoding(self, encoding):
         self.encoding = encoding
@@ -154,7 +214,7 @@ class NTLMRelayxConfig:
     def setRandomTargets(self, randomtargets):
         self.randomtargets = randomtargets
 
-    def setLDAPOptions(self, dumpdomain, addda, aclattack, validateprivs, escalateuser, addcomputer, delegateaccess, dumplaps, dumpgmsa, sid):
+    def setLDAPOptions(self, dumpdomain, addda, aclattack, validateprivs, escalateuser, addcomputer, delegateaccess, dumplaps, dumpgmsa, dumpadcs, sid, adddnsrecord, dumpinfoattr, dumppre2k=False, delegatetarget=None):
         self.dumpdomain = dumpdomain
         self.addda = addda
         self.aclattack = aclattack
@@ -162,14 +222,19 @@ class NTLMRelayxConfig:
         self.escalateuser = escalateuser
         self.addcomputer = addcomputer
         self.delegateaccess = delegateaccess
+        self.delegatetarget = delegatetarget
         self.dumplaps = dumplaps
         self.dumpgmsa = dumpgmsa
+        self.dumpadcs = dumpadcs
         self.sid = sid
+        self.adddnsrecord = adddnsrecord
+        self.dumpinfoattr = dumpinfoattr
+        self.dumppre2k = dumppre2k
 
     def setMSSQLOptions(self, queries):
         self.queries = queries
 
-    def setRPCOptions(self, rpc_mode, rpc_use_smb, auth_smb, hashes_smb, rpc_smb_port):
+    def setRPCOptions(self, rpc_mode, rpc_use_smb, auth_smb, hashes_smb, rpc_smb_port, icpr_ca_name):
         self.rpc_mode = rpc_mode
         self.rpc_use_smb = rpc_use_smb
         self.smbdomain, self.smbuser, self.smbpass = parse_credentials(auth_smb)
@@ -181,6 +246,7 @@ class NTLMRelayxConfig:
             self.smbnthash = ''
 
         self.rpc_smb_port = rpc_smb_port
+        self.icpr_ca_name = icpr_ca_name
 
     def setInteractive(self, interactive):
         self.interactive = interactive
@@ -200,9 +266,100 @@ class NTLMRelayxConfig:
         self.wpad_host = wpad_host
         self.wpad_auth_num = wpad_auth_num
 
-    def setExploitOptions(self, remove_mic, remove_target):
+    def setExploitOptions(self, remove_mic, remove_target, remove_sign_seal=False):
         self.remove_mic = remove_mic
         self.remove_target = remove_target
+        self.remove_sign_seal = remove_sign_seal
+
+    def setReauthBypassOptions(self, auth_reauth, hashes_reauth=None):
+        if not auth_reauth:
+            return
+        self.reauth_domain, self.reauth_user, self.reauth_password = parse_credentials(auth_reauth)
+
+        if hashes_reauth is not None:
+            if hashes_reauth.count(':') != 1:
+                raise Exception("Hashes for the signing bypass must be in LMHASH:NTHASH format")
+            self.reauth_lmhash, self.reauth_nthash = hashes_reauth.split(':')
+
+        # An explicit empty credential (--reauth-bypass ':') is an anonymous session, which some signing-enforced LDAP servers still hand a usable signing key
+        self.reauth_anonymous = self.reauth_user == '' and self.reauth_password == '' and self.reauth_nthash == ''
+        if not self.reauth_anonymous:
+            if self.reauth_user == '':
+                raise Exception("You must specify a username for the signing bypass, "
+                                "format is [domain/]username[:password]")
+            if self.reauth_password == '' and self.reauth_nthash == '':
+                raise Exception("You must specify a password or hashes for the signing bypass account")
+
+        self.reauth_bypass = True
+
+    def setHTTPS(self, https, certfile, keyfile):
+        self.https = https
+        self.certfile = certfile
+        self.keyfile = keyfile
 
     def setWebDAVOptions(self, serve_image):
         self.serve_image = serve_image
+
+    def setADCSOptions(self, template):
+        self.template = template
+
+    def setIsADCSAttack(self, isADCSAttack):
+        self.isADCSAttack = isADCSAttack
+
+    def setIsCESAttack(self, isCESAttack):
+        self.isCESAttack = isCESAttack
+
+    def setEnumTemplates(self, enumTemplates):
+        self.enumTemplates = enumTemplates
+
+    def setIsShadowCredentialsAttack(self, IsShadowCredentialsAttack):
+        self.IsShadowCredentialsAttack = IsShadowCredentialsAttack
+
+    def setShadowCredentialsOptions(self, ShadowCredentialsTarget, ShadowCredentialsPFXPassword, ShadowCredentialsExportType,
+                                    ShadowCredentialsOutfilePath, ShadowCredentialsReplace=False,
+                                    ShadowCredentialsBackupPath=None):
+        self.ShadowCredentialsTarget = ShadowCredentialsTarget
+        self.ShadowCredentialsPFXPassword = ShadowCredentialsPFXPassword
+        self.ShadowCredentialsExportType = ShadowCredentialsExportType
+        self.ShadowCredentialsOutfilePath = ShadowCredentialsOutfilePath
+        self.ShadowCredentialsReplace = ShadowCredentialsReplace
+        self.ShadowCredentialsBackupPath = ShadowCredentialsBackupPath
+    
+    def setIsSCCMPoliciesAttack(self, isSCCMPoliciesAttack):
+        self.isSCCMPoliciesAttack = isSCCMPoliciesAttack
+    
+    def setSCCMPoliciesOptions(self, sccm_policies_clientname, sccm_policies_sleep):
+        self.SCCMPoliciesClientname = sccm_policies_clientname
+        self.SCCMPoliciesSleep = sccm_policies_sleep
+    
+    def setIsSCCMDPAttack(self, isSCCMDPAttack):
+        self.isSCCMDPAttack = isSCCMDPAttack
+    
+    def setSCCMDPOptions(self, sccm_dp_extensions, sccm_dp_files):
+        self.SCCMDPExtensions = sccm_dp_extensions
+        self.SCCMDPFiles = sccm_dp_files       
+            
+    def setMSSQLDb(self, mssql_db):
+        self.database = mssql_db
+
+    def setAltName(self, altName):
+        self.altName = altName
+
+    def setAltSid(self, altSid):
+        self.altSid = altSid
+
+def parse_listening_ports(value):
+    ports = set()
+    for entry in value.split(","):
+        items = entry.split("-")
+        if len(items) > 2:
+            raise ValueError
+        if len(items) == 1:
+            ports.add(int(items[0])) # Can raise ValueError if casted value not an Int, will be caught by calling method
+            continue
+        item1, item2 = map(int, items) # Can raise ValueError if casted values not an Int, will be caught by calling method
+        if item2 < item1:
+            raise ValueError("Upper bound in port range smaller than lower bound")
+        ports.update(range(item1, item2 + 1))
+
+    return ports

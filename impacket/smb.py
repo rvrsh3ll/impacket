@@ -1,8 +1,20 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
+#
+# Author:
+#   Altered source done by Alberto Solino (@agsolino)
+#
+# Contributors:
+#   Raz Kissos (@covertivy)
+#
+# Copyright and license note from Pysmb:
 #
 # Copyright (C) 2001 Michael Teo <michaelteo@bigfoot.com>
 # smb.py - SMB/CIFS library
@@ -25,33 +37,34 @@
 #
 # 3. This notice cannot be removed or altered from any source distribution.
 #
-# Altered source done by Alberto Solino (@agsolino)
-
 # Todo:
-# [ ] Try [SMB]transport fragmentation using Transact requests
-# [ ] Try other methods of doing write (write_raw, transact2, write, write_and_unlock, write_and_close, write_mpx)
-# [-] Try replacements for SMB_COM_NT_CREATE_ANDX  (CREATE, T_TRANSACT_CREATE, OPEN_ANDX works
-# [x] Fix forceWriteAndx, which needs to send a RecvRequest, because recv() will not send it
-# [x] Fix Recv() when using RecvAndx and the answer comes splet in several packets
-# [ ] Try [SMB]transport fragmentation with overlapping segments
-# [ ] Try [SMB]transport fragmentation with out of order segments
-# [x] Do chained AndX requests
-# [ ] Transform the rest of the calls to structure
-# [X] Implement TRANS/TRANS2 reassembly for list_path
-from __future__ import division
-from __future__ import print_function
+#   [ ] Try [SMB]transport fragmentation using Transact requests
+#   [ ] Try other methods of doing write (write_raw, transact2, write, write_and_unlock, write_and_close, write_mpx)
+#   [-] Try replacements for SMB_COM_NT_CREATE_ANDX  (CREATE, T_TRANSACT_CREATE, OPEN_ANDX works
+#   [x] Fix forceWriteAndx, which needs to send a RecvRequest, because recv() will not send it
+#   [x] Fix Recv() when using RecvAndx and the answer comes splet in several packets
+#   [ ] Try [SMB]transport fragmentation with overlapping segments
+#   [ ] Try [SMB]transport fragmentation with out of order segments
+#   [x] Do chained AndX requests
+#   [ ] Transform the rest of the calls to structure
+#   [X] Implement TRANS/TRANS2 reassembly for list_path
+#
+
 import os
 import socket
+import warnings
 from binascii import a2b_hex
 import datetime
-from struct import pack, unpack
+from struct import pack, unpack, pack_into, error as StructError
+from ctypes import BigEndianStructure, c_uint32
 from contextlib import contextmanager
 from pyasn1.type.univ import noValue
 
-from impacket import nmb, ntlm, nt_errors, LOG
+from impacket import nmb, ntlm, nt_errors, LOG, wintime
 from impacket.structure import Structure
 from impacket.spnego import SPNEGO_NegTokenInit, TypesMech, SPNEGO_NegTokenResp, ASN1_OID, asn1encode, ASN1_AID
 from impacket.krb5.gssapi import KRB5_AP_REQ
+import six
 
 # For signing
 import hashlib
@@ -78,6 +91,7 @@ ATTR_READONLY                    = 0x001
 ATTR_TEMPORARY                   = 0x100
 ATTR_DIRECTORY                   = 0x010
 ATTR_SYSTEM                      = 0x004
+ATTR_REPARSE_POINT               = 0x400
 
 # Service Type
 SERVICE_DISK                     = 'A:'
@@ -140,7 +154,6 @@ EVASION_MAX                      = 3
 RPC_X_BAD_STUB_DATA              = 0x6F7
 
 # SMB_FILE_ATTRIBUTES
-
 SMB_FILE_ATTRIBUTE_NORMAL        = 0x0000
 SMB_FILE_ATTRIBUTE_READONLY      = 0x0001
 SMB_FILE_ATTRIBUTE_HIDDEN        = 0x0002
@@ -170,13 +183,71 @@ SMB_QUERY_FS_ATTRIBUTE_INFO      = 0x0105
 SMB_QUERY_FILE_BASIC_INFO        = 0x0101
 SMB_QUERY_FILE_STANDARD_INFO     = 0x0102
 SMB_QUERY_FILE_ALL_INFO          = 0x0107
+SMB_QUERY_FILE_STREAM_INFO       = 0x0109
 FILE_FS_FULL_SIZE_INFORMATION    = 0x03EF
 
 # SET_INFORMATION levels
-SMB_SET_FILE_DISPOSITION_INFO    = 0x0102
+SMB_INFO_STANDARD                = 0x0001
+SMB_INFO_SET_EAS                 = 0x0002
 SMB_SET_FILE_BASIC_INFO          = 0x0101
+SMB_SET_FILE_DISPOSITION_INFO    = 0x0102
+SMB_SET_FILE_ALLOCATION_INFO     = 0x0103
 SMB_SET_FILE_END_OF_FILE_INFO    = 0x0104
 
+# Device Type [MS-CIFS] 2.2.8.2.5
+FILE_DEVICE_BEEP = 0x0001
+FILE_DEVICE_CD_ROM = 0x0002
+FILE_DEVICE_CD_ROM_FILE_SYSTEM = 0x0003
+FILE_DEVICE_CONTROLLER = 0x0004
+FILE_DEVICE_DATALINK = 0x0005
+FILE_DEVICE_DFS = 0x0006
+FILE_DEVICE_DISK = 0x0007
+FILE_DEVICE_DISK_FILE_SYSTEM = 0x0008
+FILE_DEVICE_FILE_SYSTEM = 0x0009
+FILE_DEVICE_INPORT_PORT = 0x000a
+FILE_DEVICE_KEYBOARD = 0x000b
+FILE_DEVICE_MAILSLOT = 0x000c
+FILE_DEVICE_MIDI_IN = 0x000d
+FILE_DEVICE_MIDI_OUT = 0x000e
+FILE_DEVICE_MOUSE = 0x000f
+FILE_DEVICE_MULTI_UNC_PROVIDER = 0x0010
+FILE_DEVICE_NAMED_PIPE = 0x0011
+FILE_DEVICE_NETWORK = 0x0012
+FILE_DEVICE_NETWORK_BROWSER = 0x0013
+FILE_DEVICE_NETWORK_FILE_SYSTEM = 0x0014
+FILE_DEVICE_NULL = 0x0015
+FILE_DEVICE_PARALLEL_PORT = 0x0016
+FILE_DEVICE_PHYSICAL_NETCARD = 0x0017
+FILE_DEVICE_PRINTER = 0x0018
+FILE_DEVICE_SCANNER = 0x0019
+FILE_DEVICE_SERIAL_MOUSE_PORT = 0x001a
+FILE_DEVICE_SERIAL_PORT = 0x001b
+FILE_DEVICE_SCREEN = 0x001c
+FILE_DEVICE_SOUND = 0x001d
+FILE_DEVICE_STREAMS = 0x001e
+FILE_DEVICE_TAPE = 0x001f
+FILE_DEVICE_TAPE_FILE_SYSTEM = 0x0020
+FILE_DEVICE_TRANSPORT = 0x0021
+FILE_DEVICE_UNKNOWN = 0x0022
+FILE_DEVICE_VIDEO = 0x0023
+FILE_DEVICE_VIRTUAL_DISK = 0x0024
+FILE_DEVICE_WAVE_IN = 0x0025
+FILE_DEVICE_WAVE_OUT = 0x0026
+FILE_DEVICE_8042_PORT = 0x0027
+FILE_DEVICE_NETWORK_REDIRECTOR = 0x0028
+FILE_DEVICE_BATTERY = 0x0029
+FILE_DEVICE_BUS_EXTENDER = 0x002a
+FILE_DEVICE_MODEM = 0x002b
+FILE_DEVICE_VDM = 0x002c
+
+# Device Characteristics [MS-CIFS] 2.2.8.2.5
+FILE_REMOVABLE_MEDIA    = 0x0001
+FILE_READ_ONLY_DEVICE   = 0x0002
+FILE_FLOPPY_DISKETTE    = 0x0004
+FILE_WRITE_ONCE_MEDIA   = 0x0008
+FILE_REMOTE_DEVICE      = 0x0010
+FILE_DEVICE_IS_MOUNTED  = 0x0020
+FILE_VIRTUAL_VOLUME     = 0x0040
 
 # File System Attributes
 FILE_CASE_SENSITIVE_SEARCH       = 0x00000001
@@ -206,30 +277,50 @@ SMB_FIND_FILE_ID_FULL_DIRECTORY_INFO = 0x105
 SMB_FIND_FILE_ID_BOTH_DIRECTORY_INFO = 0x106
 
 
-# DesiredAccess flags
-FILE_READ_DATA                   = 0x00000001
-FILE_WRITE_DATA                  = 0x00000002
-FILE_APPEND_DATA                 = 0x00000004
-FILE_EXECUTE                     = 0x00000020
-MAXIMUM_ALLOWED                  = 0x02000000
-GENERIC_ALL                      = 0x10000000
-GENERIC_EXECUTE                  = 0x20000000
-GENERIC_WRITE                    = 0x40000000
-GENERIC_READ                     = 0x80000000
+# AccessMask (DesiredAccess) flags
+# A 32-bit field of flags that indicate standard, specific, and generic access rights. 
+# These rights are used in access-control entries (ACEs) and are the primary means of specifying the requested or granted access to an object.
+# As Specified in section 2.2.4.64.1 SMB_COM_NT_CREATE_ANDX (0xA2) Request
+FILE_READ_DATA                   = 0x00000001 # Indicates the right to read data from the file.
+FILE_WRITE_DATA                  = 0x00000002 # Indicates the right to write data into the file beyond the end of the file.
+FILE_APPEND_DATA                 = 0x00000004 # Indicates the right to append data to the file beyond the end of the file only.
+FILE_READ_EA                     = 0x00000008 # Indicates the right to read the extended attributes (EAs) of the file.
+FILE_WRITE_EA                    = 0x00000010 # Indicates the right to write or change the extended attributes (EAs) of the file.
+FILE_EXECUTE                     = 0x00000020 # Indicates the right to execute the file.
+FILE_READ_ATTRIBUTES             = 0x00000080 # Indicates the right to read the attributes of the file.
+FILE_WRITE_ATTRIBUTES            = 0x00000100 # Indicates the right to change the attributes of the file.
+DELETE                           = 0x00010000 # Indicates the right to delete or to rename the file.
+READ_CONTROL                     = 0x00020000 # Indicates the right to read the security descriptor of the file.
+WRITE_DAC                        = 0x00040000 # Indicates the right to change the discretionary access control list (DACL) in the security descriptor of the file.
+WRITE_OWNER                      = 0x00080000 # Indicates the right to change the owner in the security descriptor of the file.
+SYNCHRONIZE                      = 0x00100000 # SHOULD NOT be used by the sender and MUST be ignored by the receiver.
+ACCESS_SYSTEM_SECURITY           = 0x01000000 # Indicates the right to read or change the system access control list (SACL) in the security descriptor for the file. If the SE_SECURITY_NAME privilege is not set in the access token, the server MUST fail the open request and return STATUS_PRIVILEGE_NOT_HELD.
+MAXIMUM_ALLOWED                  = 0x02000000 # Indicates that the client requests an open to the file with the highest level of access that the client has on this file. If no access is granted for the client on this file, the server MUST fail the open and return a STATUS_ACCESS_DENIED.
+GENERIC_ALL                      = 0x10000000 # Indicates a request for all of the access flags that are previously listed except MAXIMUM_ALLOWED and ACCESS_SYSTEM_SECURITY.
+GENERIC_EXECUTE                  = 0x20000000 # Indicates a request for the following combination of access flags listed previously in this table: FILE_READ_ATTRIBUTES, FILE_EXECUTE, SYNCHRONIZE, and READ_CONTROL.
+GENERIC_WRITE                    = 0x40000000 # Indicates a request for the following combination of access flags listed previously in this table: FILE_WRITE_DATA, FILE_APPEND_DATA, SYNCHRONIZE, FILE_WRITE_ATTRIBUTES, and FILE_WRITE_EA.
+GENERIC_READ                     = 0x80000000 # Indicates a request for the following combination of access flags listed previously in this table:  FILE_READ_DATA, FILE_READ_ATTRIBUTES, FILE_READ_EA, and SYNCHRONIZE.
+
 
 # ShareAccess flags
-FILE_SHARE_NONE                  = 0x00000000
-FILE_SHARE_READ                  = 0x00000001
-FILE_SHARE_WRITE                 = 0x00000002
-FILE_SHARE_DELETE                = 0x00000004
+# A 32-bit field that specifies how the file SHOULD be shared with other processes.
+# As Specified in section 2.2.4.64.1 SMB_COM_NT_CREATE_ANDX (0xA2) Request
+FILE_SHARE_NONE                  = 0x00000000 # No bits set - Prevents the file from being shared.
+FILE_SHARE_READ                  = 0x00000001 # Other open operations can be performed on the file for read access.
+FILE_SHARE_WRITE                 = 0x00000002 # Other open operations can be performed on the file for write access.
+FILE_SHARE_DELETE                = 0x00000004 # Other open operations can be performed on the file for delete access.
+
 
 # CreateDisposition flags
-FILE_SUPERSEDE                  = 0x00000000
-FILE_OPEN                       = 0x00000001
-FILE_CREATE                     = 0x00000002
-FILE_OPEN_IF                    = 0x00000003
-FILE_OVERWRITE                  = 0x00000004
-FILE_OVERWRITE_IF               = 0x00000005
+# A 32-bit value that represents the action to take if the file already exists or if the file is a new file and does not already exist.
+# As Specified in section 2.2.4.64.1 SMB_COM_NT_CREATE_ANDX (0xA2) Request
+FILE_SUPERSEDE                  = 0x00000000 # No bits set - If the file already exists, it SHOULD be superseded (overwritten). If it does not already exist, then it SHOULD be created.
+FILE_OPEN                       = 0x00000001 # If the file already exists, it SHOULD be opened rather than created. If the file does not already exist, the operation MUST fail.
+FILE_CREATE                     = 0x00000002 # If the file already exists, the operation MUST fail. If the file does not already exist, it SHOULD be created.
+FILE_OPEN_IF                    = 0x00000003 # If the file already exists, it SHOULD be opened. If the file does not already exist, then it SHOULD be created. This value is equivalent to (FILE_OPEN | FILE_CREATE).
+FILE_OVERWRITE                  = 0x00000004 # If the file already exists, it SHOULD be opened and truncated. If the file does not already exist, the operation MUST fail.
+FILE_OVERWRITE_IF               = 0x00000005 # If the file already exists, it SHOULD be opened and truncated. If the file does not already exist, it SHOULD be created.
+
 
 def strerror(errclass, errcode):
     if errclass == 0x01:
@@ -518,7 +609,13 @@ class SessionError(Exception):
                 error_code_str = '%s(%s)' % error_code
 
         if self.nt_status:
-            return 'SMB SessionError: %s(%s)' % nt_errors.ERROR_MESSAGES[self.error_code]
+            key = self.error_code
+            if key in nt_errors.ERROR_MESSAGES:
+                error_msg_short = nt_errors.ERROR_MESSAGES[key][0] 
+                error_msg_verbose = nt_errors.ERROR_MESSAGES[key][1] 
+                return 'SMB SessionError: code: 0x%x - %s - %s' % (self.error_code, error_msg_short, error_msg_verbose)
+            else:
+                return 'SMB SessionError: unknown error code: 0x%x' % self.error_code
         else:
             # Fall back to the old format
             return 'SMB SessionError: class: %s, code: %s' % (error_class_str, error_code_str)
@@ -528,6 +625,221 @@ class SessionError(Exception):
 # currently supported by pysmb
 class UnsupportedFeature(Exception):
     pass
+
+# Add basic filetime conversion helper methods.
+def POSIXtoFT(t):
+    warnings.warn(
+        'POSIXtoFT() is deprecated and will be removed in the next version of Impacket; '
+        'use impacket.wintime.posix_to_filetime() instead.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return wintime.posix_to_filetime(t)
+
+def FTtoPOSIX(t):
+    warnings.warn(
+        'FTtoPOSIX() is deprecated and will be removed in the next version of Impacket; '
+        'use impacket.wintime.filetime_to_posix() instead.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return wintime.filetime_to_posix(t)
+
+# Define SMB Standard DateTime Data according to (2.2.1.4 Time)
+class SMBDateStruct(BigEndianStructure):
+    _fields_ = [
+        ("y", c_uint32, 7),
+        ("m", c_uint32, 4),
+        ("d", c_uint32, 5),
+    ]
+
+class SMB_DATE:
+    """
+    2.2.1.4.1 SMB_DATE
+    Class representing an SMB Date value.
+    https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cifs/31b65222-4171-49b4-aeed-7d3f38ecf68b
+    """
+    def __init__(self, year, month, day):
+        """
+        :param int year: An integer representing the valid year part of the date.
+        :param int month: An integer representing the valid month part of the date.
+        :param int day: An integer representing the valid day part of the date.
+        """
+        
+        self.year = year
+        self.month = month
+        self.day = day
+    
+    @property
+    def year(self):
+        return self._year + 1980
+    
+    @year.setter
+    def year(self, value):
+        value = value - 1980
+        if value < 0 or value > 119:
+            raise ValueError("Invalid year component.")
+        
+        self._year = value
+    
+    @property
+    def month(self):
+        return self._month
+    
+    @month.setter
+    def month(self, value):
+        if value < 0 or value > 12:
+            raise ValueError("Invalid month component.")
+        
+        self._month = value
+    
+    @property
+    def day(self):
+        return self._day
+    
+    @day.setter
+    def day(self, value):
+        if value < 0 or value > 31:
+            raise ValueError("Invalid day component.")
+        
+        self._day = value
+    
+    def pack(self):
+        return ((self._year << 9) & 0xFE00) + ((self._month << 5) & 0x01E0) + (self._day & 0x001F)
+    
+    def pack_into(self):
+        """
+        Helper method to easily access the data as a struct.
+        
+        :return SMBDateStruct: The structure representation of the object.
+        """
+        
+        res = SMBDateStruct()
+        pack_into(">H", res, 0, self.pack())
+        return res
+    
+    @classmethod
+    def from_int(cls, data):
+        """
+        Helper method to easily convert packed bytes value to class object.
+        
+        :param bytes data: Packed bytes to be converted to a class object.
+        
+        :return SMB_DATE: The class representation of the packed data bytes.
+        """
+        
+        s = SMBDateStruct()
+        pack_into(">H", s, 0, data)
+        return cls.from_struct(s)
+        
+    @classmethod
+    def from_struct(cls, s):
+        """
+        Helper method to easily convert struct to class object.
+        
+        :param SMBDateStruct s: The struct object to be converted to a class object.
+        
+        :return SMB_DATE: The class representation of the struct object.
+        """
+        
+        return cls(s.y + 1980, s.m, s.d)
+
+class SMBTimeStruct(BigEndianStructure):
+    _fields_ = [
+        ("h", c_uint32, 5),
+        ("m", c_uint32, 6),
+        ("s", c_uint32, 5),
+    ]
+
+class SMB_TIME:
+    """
+    2.2.1.4.2 SMB_TIME
+    Class representing an SMB Time value.
+    https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cifs/401749d1-ee41-4273-9dcb-698180e68745
+    """
+    def __init__(self, hour, minutes, seconds):
+        """
+        :param int hour: An integer representing the valid hour part of the time.
+        :param int minutes: An integer representing the valid minutes part of the time.
+        :param int seconds: An integer representing the valid seconds part of the time.
+        """
+        
+        self.hour = hour
+        self.minutes = minutes
+        self.seconds = seconds
+    
+    @property
+    def hour(self):
+        return self._hour
+    
+    @hour.setter
+    def hour(self, value):
+        if value < 0 or value > 23:
+            raise ValueError("Invalid hour component.")
+        
+        self._hour = value
+    
+    @property
+    def minutes(self):
+        return self._minutes
+    
+    @minutes.setter
+    def minutes(self, value):
+        if value < 0 or value > 59:
+            raise ValueError("Invalid minutes component.")
+        
+        self._minutes = value
+    
+    @property
+    def seconds(self):
+        return self._seconds
+    
+    @seconds.setter
+    def seconds(self, value):
+        if value < 0 or value > 59:
+            raise ValueError("Invalid seconds component.")
+        
+        self._seconds = value
+
+    def pack(self):
+        return ((self._hour << 11) & 0xF800) + ((self._minutes << 5) & 0x07E0) + (self._seconds & 0x001F)
+    
+    def pack_into(self):
+        """
+        Helper method to easily access the data as a struct.
+        
+        :return SMBTimeStruct: The structure representation of the object.
+        """
+        
+        res = SMBTimeStruct()
+        pack_into(">H", res, 0, self.pack())
+        return res
+
+    @classmethod
+    def from_int(cls, data):
+        """
+        Helper method to easily convert packed bytes value to class object.
+        
+        :param bytes data: Packed bytes to be converted to a class object.
+        
+        :return SMB_TIME: The class representation of the packed data bytes.
+        """
+        
+        s = SMBTimeStruct()
+        pack_into(">H", s, 0, data)
+        return cls.from_struct(s)
+        
+    @classmethod
+    def from_struct(cls, s):
+        """
+        Helper method to easily convert struct to class object.
+        
+        :param SMBTimeStruct s: The struct object to be converted to a class object.
+        
+        :return SMB_TIME: The class representation of the struct object.
+        """
+        
+        return cls(s.h, s.m, s.s)
 
 # Contains information about a SMB shared device/service
 class SharedDevice:
@@ -551,10 +863,11 @@ class SharedDevice:
 
 # Contains information about the shared file/directory
 class SharedFile:
-    def __init__(self, ctime, atime, mtime, filesize, allocsize, attribs, shortname, longname):
-        self.__ctime = ctime
-        self.__atime = atime
-        self.__mtime = mtime
+    def __init__(self, ctime, atime, wtime, mtime, filesize, allocsize, attribs, shortname, longname):
+        self.__ctime = ctime # CreateTime ([MS-CIFS] 2.2.8.1.4 SMB_FIND_FILE_DIRECTORY_INFO)
+        self.__atime = atime # LastAccessTime ([MS-CIFS] 2.2.8.1.4 SMB_FIND_FILE_DIRECTORY_INFO)
+        self.__wtime = wtime # LastWriteTime ([MS-CIFS] 2.2.8.1.4 SMB_FIND_FILE_DIRECTORY_INFO)
+        self.__mtime = mtime # LastAttrChangeTime ([MS-CIFS] 2.2.8.1.4 SMB_FIND_FILE_DIRECTORY_INFO)
         self.__filesize = filesize
         self.__allocsize = allocsize
         self.__attribs = attribs
@@ -578,6 +891,12 @@ class SharedFile:
 
     def get_ctime_epoch(self):
         return self.__convert_smbtime(self.__ctime)
+
+    def get_wtime(self):
+        return self.__wtime
+
+    def get_wtime_epoch(self):
+        return self.__convert_smbtime(self.__wtime)
 
     def get_mtime(self):
         return self.__mtime
@@ -623,6 +942,9 @@ class SharedFile:
 
     def is_system(self):
         return self.__attribs & ATTR_SYSTEM
+
+    def is_reparse_point(self):
+        return self.__attribs & ATTR_REPARSE_POINT
 
     def get_shortname(self):
         return self.__shortname
@@ -744,6 +1066,8 @@ class SMBCommand(Structure):
 class AsciiOrUnicodeStructure(Structure):
     UnicodeStructure = ()
     AsciiStructure   = ()
+    ENCODING = 'utf-8'
+
     def __init__(self, flags = 0, **kargs):
         if flags & SMB.FLAGS2_UNICODE:
             self.structure = self.UnicodeStructure
@@ -823,6 +1147,15 @@ class SMBQueryFsVolumeInfo(Structure):
         ('Reserved','<H=0x10'),
         ('VolumeLabel',':')
     )
+
+# SMB_QUERY_FS_DEVICE_INFO
+class SMBQueryFsDeviceInfo(Structure):
+    structure = (
+        ('DeviceType', '<L=0'),
+        ('DeviceCharacteristics', '<L=0')
+    )
+
+
 # SMB_FIND_FILE_BOTH_DIRECTORY_INFO level
 class SMBFindFileBothDirectoryInfo(AsciiOrUnicodeStructure):
     commonHdr = (
@@ -837,7 +1170,7 @@ class SMBFindFileBothDirectoryInfo(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
         ('ShortNameLength','<B=0'),
         ('Reserved','<B=0'),
@@ -845,7 +1178,7 @@ class SMBFindFileBothDirectoryInfo(AsciiOrUnicodeStructure):
         ('FileName',':'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
         ('ShortNameLength','<B=0'),
         ('Reserved','<B=0'),
@@ -867,14 +1200,16 @@ class SMBFindFileIdFullDirectoryInfo(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
+        ('Reserved', '<L=0'),
         ('FileID','<q=0'),
-        ('FileName',':'),
+        ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
+        ('Reserved','<L=0'),
         ('FileID','<q=0'),
         ('FileName',':'),
     )
@@ -893,7 +1228,7 @@ class SMBFindFileIdBothDirectoryInfo(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
         ('ShortNameLength','<B=0'),
         ('Reserved','<B=0'),
@@ -903,7 +1238,7 @@ class SMBFindFileIdBothDirectoryInfo(AsciiOrUnicodeStructure):
         ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L=0'),
         ('ShortNameLength','<B=0'),
         ('Reserved','<B=0'),
@@ -927,11 +1262,11 @@ class SMBFindFileDirectoryInfo(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('FileName',':'),
     )
 
@@ -942,11 +1277,11 @@ class SMBFindFileNamesInfo(AsciiOrUnicodeStructure):
         ('FileIndex','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('FileName',':'),
     )
 
@@ -964,12 +1299,12 @@ class SMBFindFileFullDirectoryInfo(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<L=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L'),
         ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<L-FileName','len(FileName)*2'),
+        ('FileNameLength','<L-FileName'),
         ('EaSize','<L'),
         ('FileName',':'),
     )
@@ -989,30 +1324,42 @@ class SMBFindInfoStandard(AsciiOrUnicodeStructure):
         ('ExtFileAttributes','<H=0'),
     )
     AsciiStructure = (
-        ('FileNameLength','<B-FileName','len(FileName)'),
+        ('FileNameLength','<B-FileName'),
         ('FileName','z'),
     )
     UnicodeStructure = (
-        ('FileNameLength','<B-FileName','len(FileName)*2'),
+        ('FileNameLength','<B-FileName'),
         ('FileName',':'),
     )
 
 # SET_FILE_INFORMATION structures
-# SMB_SET_FILE_DISPOSITION_INFO
+# 2.2.8.4.1 SMB_INFO_STANDARD
+class SMBSetStandardInfo(Structure):
+    structure = (
+        ('CreateDate','<H'),
+        ('CreationTime','<H'),
+        ('LastAccessDate','<H'),
+        ('LastAccessTime','<H'),
+        ('LastWriteDate','<H'),
+        ('LastWriteTime','<H'),
+        ('Reserved','<B=10'),
+    )
+
+# 2.2.8.4.4 SMB_SET_FILE_DISPOSITION_INFO
 class SMBSetFileDispositionInfo(Structure):
     structure = (
         ('DeletePending','<B'),
     )
 
-# SMB_SET_FILE_BASIC_INFO
+# 2.2.8.4.3 SMB_SET_FILE_BASIC_INFO
 class SMBSetFileBasicInfo(Structure):
     structure = (
         ('CreationTime','<q'),
         ('LastAccessTime','<q'),
         ('LastWriteTime','<q'),
         ('ChangeTime','<q'),
-        ('ExtFileAttributes','<H'),
-        ('Reserved','<L'),
+        ('ExtFileAttributes','<L'),
+        ('Reserved','<L=0'),
     )
 
 # FILE_STREAM_INFORMATION
@@ -1221,7 +1568,7 @@ class SMBQueryFileAllInfo(Structure):
         ('Directory','<B'),
         ('Reserved','<H=0'),
         ('EaSize','<L=0'),
-        ('FileNameLength','<L-FileName','len(FileName)'),
+        ('FileNameLength','<L-FileName'),
         ('FileName',':'),
     )
 
@@ -1422,7 +1769,7 @@ class SMBSessionSetupAndX_Extended_Response_Data(AsciiOrUnicodeStructure):
     )
     def getData(self):
         if self.structure == self.UnicodeStructure:
-            if len(str(self['SecurityBlob'])) % 2 == 0:
+            if len(self['SecurityBlob']) % 2 == 0:
                 self['Pad'] = '\x00'
         return AsciiOrUnicodeStructure.getData(self)
 
@@ -2025,7 +2372,7 @@ class SMBQueryInformationDiskResponse_Parameters(Structure):
 
 ############# SMB_COM_LOGOFF_ANDX (0x74)
 class SMBLogOffAndX(SMBAndXCommand_Parameters):
-    strucure = ()
+    structure = ()
 
 ############# SMB_COM_CLOSE (0x04)
 class SMBClose_Parameters(SMBCommand_Parameters):
@@ -2614,11 +2961,19 @@ class SMB(object):
                 self._dialects_parameters = SMBNTLMDialect_Parameters(sessionResponse['Parameters'])
                 self._dialects_data = SMBNTLMDialect_Data()
                 self._dialects_data['ChallengeLength'] = self._dialects_parameters['ChallengeLength']
-                self._dialects_data.fromString(sessionResponse['Data'])
+                try:
+                    self._dialects_data.fromString(sessionResponse['Data'])
+                except (ValueError, StructError) as e:
+                    LOG.debug("Negotiate response parsing failed: %s", e)
+                    raise SessionError("Connection failed: invalid or truncated server response", 0x000D, 0xC000, 1, None)
                 if self._dialects_parameters['Capabilities'] & SMB.CAP_EXTENDED_SECURITY:
                     # Whether we choose it or it is enforced by the server, we go for extended security
                     self._dialects_parameters = SMBExtended_Security_Parameters(sessionResponse['Parameters'])
-                    self._dialects_data = SMBExtended_Security_Data(sessionResponse['Data'])
+                    try:
+                        self._dialects_data = SMBExtended_Security_Data(sessionResponse['Data'])
+                    except (ValueError, StructError) as e:
+                        LOG.debug("Negotiate extended security response parsing failed: %s", e)
+                        raise SessionError("Connection failed: invalid or truncated server response", 0x000D, 0xC000, 1, None)
                     # Let's setup some variable for later use
                     if self._dialects_parameters['SecurityMode'] & SMB.SECURITY_SIGNATURES_REQUIRED:
                          self._SignatureRequired = True
@@ -2802,7 +3157,7 @@ class SMB(object):
         timestamp |= self._dialects_parameters['LowDateTime']
         timestamp -= 116444736000000000
         timestamp //= 10000000
-        d = datetime.datetime.utcfromtimestamp(timestamp)
+        d = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
         return d.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
     def disconnect_tree(self, tid):
@@ -2983,6 +3338,21 @@ class SMB(object):
             trans2Parameters = SMBTransaction2Response_Parameters(trans2Response['Parameters'])
             # Remove Potential Prefix Padding
             return trans2Response['Data'][-trans2Parameters['TotalDataCount']:]
+    
+    def set_file_info(self, tid, fid, fileInfoClass, file_info_data):
+        SMBTrans2SetFileInfo_Params = SMBSetFileInformation_Parameters()
+        SMBTrans2SetFileInfo_Params["FID"] = fid
+        SMBTrans2SetFileInfo_Params["InformationLevel"] = fileInfoClass
+        SMBTrans2SetFileInfo_Params["Reserved"] = 0
+        
+        self.send_trans2(tid, SMB.TRANS2_SET_FILE_INFORMATION, '\x00', SMBTrans2SetFileInfo_Params.getData(), file_info_data.getData())
+
+        resp = self.recvSMB()
+        if resp.isValidAnswer(SMB.SMB_COM_TRANSACTION2):
+            trans2Response = SMBCommand(resp['Data'][0])
+            trans2Parameters = SMBTransaction2Response_Parameters(trans2Response['Parameters'])
+            # Remove Potential Prefix Padding
+            return trans2Response['Data'][-trans2Parameters['TotalDataCount']:]
 
     def __nonraw_retr_file(self, tid, fid, offset, datasize, callback):
         if (self._dialects_parameters['Capabilities'] & SMB.CAP_LARGE_READX) and self._SignatureEnabled is False:
@@ -3111,6 +3481,7 @@ class SMB(object):
         if TGT is None:
             if TGS is None:
                 tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, password, domain, lmhash, nthash, aesKey, kdcHost)
+                TGT = {'KDC_REP': tgt, 'cipher': cipher, 'sessionKey': sessionKey}
         else:
             tgt = TGT['KDC_REP']
             cipher = TGT['cipher']
@@ -3121,6 +3492,7 @@ class SMB(object):
         if TGS is None:
             serverName = Principal('cifs/%s' % self.__remote_name, type=constants.PrincipalNameType.NT_SRV_INST.value)
             tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey)
+            TGS = {'KDC_REP': tgs, 'cipher': cipher, 'sessionKey': sessionKey}
         else:
             tgs = TGS['KDC_REP']
             cipher = TGS['cipher']
@@ -3170,7 +3542,7 @@ class SMB(object):
         authenticator['authenticator-vno'] = 5
         authenticator['crealm'] = domain
         seq_set(authenticator, 'cname', userName.components_to_asn1)
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         authenticator['cusec'] = now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
@@ -3211,7 +3583,11 @@ class SMB(object):
             sessionParameters = SMBSessionSetupAndX_Extended_Response_Parameters(sessionResponse['Parameters'])
             sessionData       = SMBSessionSetupAndX_Extended_Response_Data(flags = smb['Flags2'])
             sessionData['SecurityBlobLength'] = sessionParameters['SecurityBlobLength']
-            sessionData.fromString(sessionResponse['Data'])
+            try:
+                sessionData.fromString(sessionResponse['Data'])
+            except (ValueError, StructError) as e:
+                LOG.debug("Session setup response parsing failed: %s", e)
+                raise SessionError("Authentication failed: invalid or truncated server response", 0x006D, 0xC000, 1, None)
 
             self._action = sessionParameters['Action']
             # If smb sign required, let's enable it for the rest of the connection
@@ -3223,6 +3599,10 @@ class SMB(object):
             # restore unicode flag if needed
             if flags2 & SMB.FLAGS2_UNICODE:
                 self.__flags2 |= SMB.FLAGS2_UNICODE
+
+            # Persist the TGT/ST so callers can reuse them through getCredentials()
+            self.__TGT = TGT
+            self.__TGS = TGS
 
             return 1
         else:
@@ -3284,8 +3664,14 @@ class SMB(object):
             sessionParameters = SMBSessionSetupAndX_Extended_Response_Parameters(sessionResponse['Parameters'])
             sessionData       = SMBSessionSetupAndX_Extended_Response_Data(flags = smb['Flags2'])
             sessionData['SecurityBlobLength'] = sessionParameters['SecurityBlobLength']
-            sessionData.fromString(sessionResponse['Data'])
+            try:
+                sessionData.fromString(sessionResponse['Data'])
+            except (ValueError, StructError) as e:
+                LOG.debug("Session setup response parsing failed: %s", e)
+                raise SessionError("Authentication failed: invalid or truncated server response", 0x006D, 0xC000, 1, None)
             respToken = SPNEGO_NegTokenResp(sessionData['SecurityBlob'])
+            if respToken.isNegoExSelected():
+                raise NotImplementedError('NEGOEX / PKU2U authentication is not implemented yet')
 
             # Let's parse some data and keep it to ourselves in case it is asked
             ntlmChallenge = ntlm.NTLMAuthChallenge(respToken['ResponseToken'])
@@ -3423,7 +3809,8 @@ class SMB(object):
                 self.login_extended(user, password, domain, lmhash, nthash, use_ntlmv2 = True)
             except:
                 # If the target OS is Windows 5.0 or Samba, let's try using NTLMv1
-                if ntlm_fallback and ((self.get_server_lanman().find('Windows 2000') != -1) or (self.get_server_lanman().find('Samba') != -1)):
+                if ntlm_fallback and ((six.ensure_binary(self.get_server_lanman()).find(b'Windows 2000') != -1) or
+                                      (six.ensure_binary(self.get_server_lanman()).find(b'Samba') != -1)):
                     self.login_extended(user, password, domain, lmhash, nthash, use_ntlmv2 = False)
                     self.__isNTLMv2 = False
                 else:
@@ -3527,6 +3914,15 @@ class SMB(object):
 
         setup = '\x53\x00\x00\x00'
         name = '\\PIPE%s\x00' % pipe
+        if self.__flags2 & SMB.FLAGS2_UNICODE:
+            start_of_name = 32+3+28+len(setup)#32 is smb_header,28 is parameter,3 is wordcount and bytecount
+            start_pad = 2-(start_of_name%2)
+            name = start_pad*b'\x00' + name.encode('utf-16le')
+            end_of_name = start_of_name+len(name) 
+            pad_len = 4-(end_of_name%4)
+            name += pad_len*b'\x00'
+        else:
+            name = name.encode('utf-8')
         transCommand['Parameters']['Setup'] = setup
         transCommand['Parameters']['TotalParameterCount'] = 0
         transCommand['Parameters']['TotalDataCount'] = 0
@@ -3789,7 +4185,7 @@ class SMB(object):
            return transResponse['Data'][-transParameters['TotalDataCount']:] # Remove Potential Prefix Padding
         return None
 
-    def nt_create_andx(self,tid,filename, smb_packet=None, cmd = None, shareAccessMode = FILE_SHARE_READ | FILE_SHARE_WRITE, disposition = FILE_OPEN, accessMask = 0x2019f):
+    def nt_create_andx(self, tid, filename, smb_packet = None, cmd = None, shareAccessMode = FILE_SHARE_READ | FILE_SHARE_WRITE, disposition = FILE_OPEN, accessMask = READ_CONTROL | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | FILE_WRITE_EA | FILE_READ_EA | FILE_APPEND_DATA | FILE_WRITE_DATA):
         filename = filename.replace('/', '\\')
         filename = filename.encode('utf-16le') if self.__flags2 & SMB.FLAGS2_UNICODE else filename
 
@@ -3880,7 +4276,7 @@ class SMB(object):
             # Save the SID for resume operations
             sid = findParameterBlock['SID']
 
-            while True:
+            while findParameterBlock['SearchCount'] > 0:
                 record = SMBFindFileBothDirectoryInfo(data = findData)
 
                 shortname = record['ShortName'].decode('utf-16le') if self.__flags2 & SMB.FLAGS2_UNICODE else \
@@ -3888,7 +4284,7 @@ class SMB(object):
                 filename = record['FileName'].decode('utf-16le') if self.__flags2 & SMB.FLAGS2_UNICODE else \
                                                                         record['FileName'].decode('cp437')
 
-                fileRecord = SharedFile(record['CreationTime'], record['LastAccessTime'], record['LastChangeTime'],
+                fileRecord = SharedFile(record['CreationTime'], record['LastAccessTime'], record['LastWriteTime'], record['LastChangeTime'],
                                   record['EndOfFile'], record['AllocationSize'], record['ExtFileAttributes'],
                                   shortname, filename)
                 files.append(fileRecord)
@@ -3902,7 +4298,7 @@ class SMB(object):
                         findNextParameter['SID'] = sid
                         findNextParameter['SearchCount'] = 1024
                         findNextParameter['InformationLevel'] = SMB_FIND_FILE_BOTH_DIRECTORY_INFO
-                        findNextParameter['ResumeKey'] = 0
+                        findNextParameter['ResumeKey'] = record["FileIndex"]
                         findNextParameter['Flags'] = SMB_FIND_RETURN_RESUME_KEYS | SMB_FIND_CLOSE_AT_EOS
                         if self.__flags2 & SMB.FLAGS2_UNICODE:
                             findNextParameter['FileName'] = resume_filename + b'\x00\x00'
@@ -3929,13 +4325,13 @@ class SMB(object):
 
         return files
 
-    def retr_file(self, service, filename, callback, mode = FILE_OPEN, offset = 0, password = None, shareAccessMode = SMB_ACCESS_READ):
+    def retr_file(self, service, filename, callback, mode = FILE_OPEN, offset = 0, password = None, shareAccessMode = FILE_SHARE_READ):
         filename = filename.replace('/', '\\')
 
         fid = -1
         tid = self.tree_connect_andx('\\\\' + self.__remote_name + '\\' + service, password)
         try:
-            fid = self.nt_create_andx(tid, filename, shareAccessMode = shareAccessMode, accessMask = 0x20089)
+            fid = self.nt_create_andx(tid, filename, shareAccessMode = shareAccessMode, accessMask = READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | FILE_READ_DATA)
 
             res = self.query_file_info(tid, fid)
             datasize = SMBQueryFileStandardInfo(res)['EndOfFile']
@@ -3946,7 +4342,7 @@ class SMB(object):
                 self.close(tid, fid)
             self.disconnect_tree(tid)
 
-    def stor_file(self, service, filename, callback, mode = FILE_OVERWRITE_IF, offset = 0, password = None, shareAccessMode = SMB_ACCESS_WRITE):
+    def stor_file(self, service, filename, callback, mode = FILE_OVERWRITE_IF, offset = 0, password = None, shareAccessMode = FILE_SHARE_READ):
         filename = filename.replace('/', '\\')
 
         fid = -1
@@ -3960,7 +4356,7 @@ class SMB(object):
                 self.close(tid, fid)
             self.disconnect_tree(tid)
 
-    def stor_file_nonraw(self, service, filename, callback, mode = FILE_OVERWRITE_IF, offset = 0, password = None, shareAccessMode = SMB_ACCESS_WRITE ):
+    def stor_file_nonraw(self, service, filename, callback, mode = FILE_OVERWRITE_IF, offset = 0, password = None, shareAccessMode = FILE_SHARE_READ):
         filename = filename.replace('/', '\\')
 
         fid = -1
@@ -4115,6 +4511,8 @@ class SMB(object):
             writeResponse   = SMBCommand(smb['Data'][0])
             writeResponseParameters = SMBWriteAndXResponse_Parameters(writeResponse['Parameters'])
             write_offset += writeResponseParameters['Count']
+        
+        return write_offset
 
     def get_socket(self):
         return self._sess.get_socket()

@@ -1,19 +1,23 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # Description:
-#  Network packet codecs basic building blocks.
-#  Low-level packet codecs for various Internet protocols.
+#   Network packet codecs basic building blocks.
+#   Low-level packet codecs for various Internet protocols.
 #
 # Author:
-#  Javier Burroni (javier)
-#  Bruce Leidl (brl)
-#  Javier Kohen (jkohen)
-from __future__ import division
-from __future__ import print_function
+#   Javier Burroni (javier)
+#   Bruce Leidl (brl)
+#   Javier Kohen (jkohen)
+#
+
 import array
 import struct
 import socket
@@ -426,7 +430,7 @@ class Header(PacketBuffer,ProtocolLayer):
         if(len(aBuffer) < hdr_len):         #we must do something like this
             diff = hdr_len - len(aBuffer)
             for i in range(0, diff):
-                aBuffer += '\x00'
+                aBuffer += b'\x00'
         self.set_bytes_from_string(aBuffer[:hdr_len])
 
     def get_header_size(self):
@@ -707,7 +711,7 @@ class LinuxSLL(Header):
 
     def set_arphdr(self, value):
         "Sets the ARPHDR value for the link layer device type"
-        self.set_word(2, type)
+        self.set_word(2, value)
 
     def get_arphdr(self):
         "Returns the ARPHDR value for the link layer device type"
@@ -723,8 +727,9 @@ class LinuxSLL(Header):
 
     def set_addr(self, addr):
         "Sets the sender's address field to addr. Addr must be at most 8-byte long."
-        if (len(addr) < 8):
-            addr += b'\0' * (8 - len(addr))
+        addr = array.array('B', addr[:8])
+        if len(addr) < 8:
+            addr.extend(b'\0' * (8 - len(addr)))
         self.get_bytes()[6:14] = addr
 
     def get_addr(self):
@@ -799,24 +804,27 @@ class IP(Header):
         if self.auto_checksum:
             self.reset_ip_sum()
 
-        my_bytes = self.get_bytes()
-
+        # Collect the options in their own buffer, so that the header
+        # buffer is not modified and get_packet() can be called again
+        op_bytes = array.array('B')
         for op in self.__option_list:
-            my_bytes.extend(op.get_bytes())
+            op_bytes.extend(op.get_bytes())
 
         # Pad to a multiple of 4 bytes
-        num_pad = (4 - (len(my_bytes) % 4)) % 4
+        num_pad = (4 - ((len(self.get_bytes()) + len(op_bytes)) % 4)) % 4
         if num_pad:
-            array_frombytes(my_bytes, b"\0" * num_pad)
+            array_frombytes(op_bytes, b"\0" * num_pad)
 
         # only change ip_hl value if options are present
         if len(self.__option_list):
-            self.set_ip_hl(len(my_bytes) // 4)
+            self.set_ip_hl((len(self.get_bytes()) + len(op_bytes)) // 4)
 
 
         # set the checksum if the user hasn't modified it
         if self.auto_checksum:
-            self.set_ip_sum(self.compute_checksum(my_bytes))
+            self.set_ip_sum(self.compute_checksum(self.get_bytes() + op_bytes))
+
+        my_bytes = self.get_bytes() + op_bytes
 
         if child_data is None:
             return array_tobytes(my_bytes)
@@ -884,6 +892,24 @@ class IP(Header):
 
     def set_ip_tos(self,value):
         self.set_byte(1, value)
+
+    # RFC 2474/3168 split the old ToS byte into a 6 bit DSCP field
+    # (high bits) and a 2 bit ECN field (low bits).
+    def get_ip_dscp(self):
+        return self.get_byte(1) >> 2
+
+    def set_ip_dscp(self, value):
+        n = self.get_byte(1) & 0x03
+        n |= (value & 0x3F) << 2
+        self.set_byte(1, n)
+
+    def get_ip_ecn(self):
+        return self.get_byte(1) & 0x03
+
+    def set_ip_ecn(self, value):
+        n = self.get_byte(1) & 0xFC
+        n |= value & 0x03
+        self.set_byte(1, n)
 
     def get_ip_len(self):
         if self.is_BSD:
@@ -960,10 +986,10 @@ class IP(Header):
 
 
     def fragment_by_list(self, aList):
-        if self.child():
+        if self.child() and self.child().protocol is not None:
             proto = self.child().protocol
         else:
-            proto = 0
+            proto = self.get_ip_p()
 
         child_data = self.get_data_as_string()
         if not child_data:
@@ -1019,7 +1045,10 @@ class IP(Header):
 
 
     def fragment_by_size(self, aSize):
-        data_len = len(self.get_data_as_string())
+        data = self.get_data_as_string()
+        if not data:
+            return [self]
+        data_len = len(data)
         num_frags = data_len // aSize
 
         if data_len % aSize:
@@ -1089,6 +1118,8 @@ class IP(Header):
                 op_len = opt_bytes[1]
                 if op_len > len(opt_bytes):
                     raise ImpactPacketException("IP Option length is too high")
+                if op_len < 2:
+                    raise ImpactPacketException("IP Option length is too low")
 
                 new_option = IPOption(op_type, op_len)
                 new_option.set_bytes(opt_bytes[:op_len])
@@ -1572,7 +1603,7 @@ class TCP(Header):
             op_buf += op.get_bytes()
         num_pad = (4 - (len(op_buf) % 4)) % 4
         if num_pad:
-            array_frombytes(op_buf, "\0" * num_pad)
+            array_frombytes(op_buf, b"\0" * num_pad)
         return op_buf
 
     def __str__(self):

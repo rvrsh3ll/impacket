@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-#
-# Author:
-#  beto (@agsolino)
 #
 # Description:
 #   This script will exploit CVE-2017-7494, uploading and executing the shared library specified by the user through
@@ -27,6 +27,8 @@
 #
 #   Same as before, but anonymous authentication will be used.
 #
+# Author:
+#   beto (@agsolino)
 #
 
 import argparse
@@ -198,8 +200,6 @@ class PIPEDREAM:
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
 
     parser = argparse.ArgumentParser(add_help=True, description="Samba Pipe exploit")
@@ -207,6 +207,7 @@ if __name__ == '__main__':
     parser.add_argument('target', action='store', help='[[domain/]username[:password]@]<targetName or address>')
     parser.add_argument('-so', action='store', required = True, help='so filename to upload and load')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
 
     group = parser.add_argument_group('authentication')
 
@@ -236,13 +237,8 @@ if __name__ == '__main__':
         sys.exit(1)
 
     options = parser.parse_args()
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     domain, username, password, address = parse_target(options.target)
 

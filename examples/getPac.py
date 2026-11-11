@@ -1,24 +1,27 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author:
-#  Alberto Solino (@agsolino)
-#
 # Description:
-#     This script will get the PAC of the specified target user just having a normal authenticated user credentials.
-#     It does so by using a mix of [MS-SFU]'s S4USelf + User to User Kerberos Authentication.
-#     Original idea (or accidental discovery :) ) of adding U2U capabilities inside a S4USelf by Benjamin Delpy (@gentilkiwi)
+#   This script will get the PAC of the specified target user just having a normal authenticated user credentials.
+#   It does so by using a mix of [MS-SFU]'s S4USelf + User to User Kerberos Authentication.
+#   Original idea (or accidental discovery :) ) of adding U2U capabilities inside a S4USelf by Benjamin Delpy (@gentilkiwi)
+#
+# Author:
+#   Alberto Solino (@agsolino)
 #
 # References:
+#   - U2U: https://tools.ietf.org/html/draft-ietf-cat-user2user-02
+#   - [MS-SFU]: https://msdn.microsoft.com/en-us/library/cc246071.aspx
 #
-#     U2U: https://tools.ietf.org/html/draft-ietf-cat-user2user-02
-#     [MS-SFU]: https://msdn.microsoft.com/en-us/library/cc246071.aspx
-from __future__ import division
-from __future__ import print_function
+
 import argparse
 import datetime
 import logging
@@ -35,12 +38,12 @@ from pyasn1.type.univ import noValue
 from impacket import version
 from impacket.dcerpc.v5.rpcrt import TypeSerialization1
 from impacket.examples import logger
-from impacket.examples.utils import parse_credentials
+from impacket.examples.utils import parse_identity
 from impacket.krb5 import constants
 from impacket.krb5.asn1 import AP_REQ, AS_REP, TGS_REQ, Authenticator, TGS_REP, seq_set, seq_set_iter, PA_FOR_USER_ENC, \
     EncTicketPart, AD_IF_RELEVANT, Ticket as TicketAsn1
 from impacket.krb5.crypto import Key, _enctype_table, _HMACMD5, Enctype
-from impacket.krb5.kerberosv5 import getKerberosTGT, sendReceive
+from impacket.krb5.kerberosv5 import getKerberosTGT, getKerberosTGSRequestEnctypes, sendReceive
 from impacket.krb5.pac import PACTYPE, PAC_INFO_BUFFER, KERB_VALIDATION_INFO, PAC_CLIENT_INFO_TYPE, PAC_CLIENT_INFO, \
     PAC_SERVER_CHECKSUM, PAC_SIGNATURE_DATA, PAC_PRIVSVR_CHECKSUM, PAC_UPN_DNS_INFO, UPN_DNS_INFO
 from impacket.krb5.types import Principal, KerberosTime, Ticket
@@ -143,7 +146,7 @@ class S4U2SELF:
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
 
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         authenticator['cusec'] = now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
 
@@ -233,12 +236,11 @@ class S4U2SELF:
         seq_set(reqBody, 'sname', serverName.components_to_asn1)
         reqBody['realm'] = str(decodedTGT['crealm'])
 
-        now = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
 
         reqBody['till'] = KerberosTime.to_asn1(now)
         reqBody['nonce'] = random.getrandbits(31)
-        seq_set_iter(reqBody, 'etype',
-                      (int(cipher.enctype),int(constants.EncryptionTypes.rc4_hmac.value)))
+        seq_set_iter(reqBody, 'etype', getKerberosTGSRequestEnctypes())
 
         # If you comment these two lines plus enc_tkt_in_skey as option, it is bassically a S4USelf
         myTicket = ticket.to_asn1(TicketAsn1())
@@ -287,7 +289,6 @@ class S4U2SELF:
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    logger.init()
     print(version.BANNER)
 
     parser = argparse.ArgumentParser()
@@ -296,6 +297,7 @@ if __name__ == '__main__':
                                                        'for grabbing targetUser\'s PAC')
     parser.add_argument('-targetUser', action='store', required=True, help='the target user to retrieve the PAC of')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
 
     group = parser.add_argument_group('authentication')
 
@@ -305,22 +307,9 @@ if __name__ == '__main__':
         sys.exit(1)
 
     options = parser.parse_args()
+    logger.init(options.ts, options.debug)
 
-    domain, username, password = parse_credentials(options.credentials)
-
-    if domain is None:
-        domain = ''
-
-    if password == '' and username != '' and options.hashes is None:
-        from getpass import getpass
-        password = getpass("Password:")
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    domain, username, password, _, _, _ = parse_identity(options.credentials, options.hashes)
 
     try:
         dumper = S4U2SELF(options.targetUser, username, password, domain, options.hashes)

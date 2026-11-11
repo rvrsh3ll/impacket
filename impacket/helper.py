@@ -1,15 +1,19 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # Description:
-#  Helper used to build ProtocolPackets
+#   Helper used to build ProtocolPackets
 #
 # Author:
-# Aureliano Calvo
-
+#   Aureliano Calvo
+#
 
 import struct
 import functools

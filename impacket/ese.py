@@ -1,35 +1,33 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # Description:
-#             Microsoft Extensive Storage Engine parser, just focused on trying 
-#             to parse NTDS.dit files (not meant as a full parser, although it might work)
+#   Microsoft Extensive Storage Engine parser, just focused on trying
+#   to parse NTDS.dit files (not meant as a full parser, although it might work)
 #
 # Author:
-#  Alberto Solino (@agsolino)
+#   Alberto Solino (@agsolino)
 #
 # Reference for:
-#  Structure.
+#   Structure
 # 
-# Excellent reference done by Joachim Metz
-# http://forensic-proof.com/wp-content/uploads/2011/07/Extensible-Storage-Engine-ESE-Database-File-EDB-format.pdf
+#   Excellent reference done by Joachim Metz
+#   - http://forensic-proof.com/wp-content/uploads/2011/07/Extensible-Storage-Engine-ESE-Database-File-EDB-format.pdf
 #
 # ToDo: 
-# [ ] Parse multi-values properly
-# [ ] Support long values properly
-from __future__ import division
-from __future__ import print_function
+#   [ ] Parse multi-values properly
+#   [ ] Support long values properly
+#
+
 from impacket import LOG
-try:
-    from collections import OrderedDict
-except:
-    try:
-        from ordereddict.ordereddict import OrderedDict
-    except:
-        from ordereddict import OrderedDict
+from collections import OrderedDict
 from impacket.structure import Structure, hexdump
 from struct import unpack
 from binascii import hexlify
@@ -57,6 +55,11 @@ FLAGS_INDEX        = 0x40
 FLAGS_LONG_VALUE   = 0x80
 FLAGS_NEW_FORMAT   = 0x2000
 FLAGS_NEW_CHECKSUM = 0x2000
+
+# On 16 KiB and 32 KiB pages, the raw 16-bit tag state appears to store the total
+# tag count in the lower 12 bits. The upper 4 bits seem to represent a reserved tag count.
+FIRST_AVAILABLE_PAGE_TAG_MASK = 0x0fff
+FIRST_AVAILABLE_PAGE_TAG_RESERVED_SHIFT = 12
 
 # Tag Flags
 TAG_UNKNOWN = 0x1
@@ -426,42 +429,26 @@ class ESENT_CATALOG_DATA_DEFINITION_ENTRY(Structure):
         Structure.__init__(self,data)
 
 
-#def pretty_print(x):
-#    if x in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~ ':
-#       return x
-#    else:
-#       return '.'
-#
-#def hexdump(data):
-#    x=str(data)
-#    strLen = len(x)
-#    i = 0
-#    while i < strLen:
-#        print "%04x  " % i,
-#        for j in range(16):
-#            if i+j < strLen:
-#                print "%02X" % ord(x[i+j]),
-#
-#            else:
-#                print "  ",
-#            if j%16 == 7:
-#                print "",
-#        print " ",
-#        print ''.join(pretty_print(x) for x in x[i:i+16] )
-#        i += 16
 
-def getUnixTime(t):
-    t -= 116444736000000000
-    t //= 10000000
-    return t
 
 class ESENT_PAGE:
     def __init__(self, db, data=None):
         self.__DBHeader = db
         self.data = data
         self.record = None
+        self.tagCount = 0
+        self.tagReserved = 1
+        self.firstDataTag = 1
         if data is not None:
             self.record = ESENT_PAGE_HEADER(self.__DBHeader['Version'], self.__DBHeader['FileFormatRevision'], self.__DBHeader['PageSize'], data)
+            self.tagCount = self.record['FirstAvailablePageTag']
+            if self.__DBHeader['Version'] == 0x620 and self.__DBHeader['FileFormatRevision'] >= 0x11 and self.__DBHeader['PageSize'] > 8192:
+                self.tagReserved = (self.record['FirstAvailablePageTag'] >> FIRST_AVAILABLE_PAGE_TAG_RESERVED_SHIFT) or 1
+                self.tagCount = self.record['FirstAvailablePageTag'] & FIRST_AVAILABLE_PAGE_TAG_MASK
+            self.firstDataTag = min(self.tagReserved, self.tagCount)
+
+    def iterDataTagNums(self):
+        return range(self.firstDataTag, self.tagCount)
 
     def printFlags(self):
         flags = self.record['PageFlags']
@@ -489,14 +476,14 @@ class ESENT_PAGE:
     def dump(self):
         baseOffset = len(self.record)
         self.record.dump()
-        tags = self.data[-4*self.record['FirstAvailablePageTag']:]
+        tags = self.data[-4*self.tagCount:]
 
         print("FLAGS: ")
         self.printFlags()
 
         print()
 
-        for i in range(self.record['FirstAvailablePageTag']):
+        for i in range(self.tagCount):
             tag = tags[-4:]
             if self.__DBHeader['Version'] == 0x620 and self.__DBHeader['FileFormatRevision'] > 11 and self.__DBHeader['PageSize'] > 8192:
                 valueSize = unpack('<H', tag[:2])[0] & 0x7fff
@@ -534,7 +521,7 @@ class ESENT_PAGE:
                 leafHeader.dump()
 
         # Print the leaf/branch tags
-        for tagNum in range(1,self.record['FirstAvailablePageTag']):
+        for tagNum in self.iterDataTagNums():
             flags, data = self.getTag(tagNum)
             if self.record['PageFlags'] & FLAGS_LEAF == 0:
                 # Branch page
@@ -564,10 +551,10 @@ class ESENT_PAGE:
                     hexdump(leafEntry['EntryData'])
 
     def getTag(self, tagNum):
-        if self.record['FirstAvailablePageTag'] < tagNum:
+        if self.tagCount <= tagNum:
             raise Exception('Trying to grab an unknown tag 0x%x' % tagNum)
 
-        tags = self.data[-4*self.record['FirstAvailablePageTag']:]
+        tags = self.data[-4*self.tagCount:]
         baseOffset = len(self.record)
         for i in range(tagNum):
             tags = tags[:-4]
@@ -577,10 +564,11 @@ class ESENT_PAGE:
         if self.__DBHeader['Version'] == 0x620 and self.__DBHeader['FileFormatRevision'] >= 17 and self.__DBHeader['PageSize'] > 8192:
             valueSize = unpack('<H', tag[:2])[0] & 0x7fff
             valueOffset = unpack('<H',tag[2:])[0] & 0x7fff
-            tmpData = list(self.data[baseOffset+valueOffset:][:valueSize])
-            pageFlags = ord(tmpData[1]) >> 5
-            tmpData[1] = chr(ord(tmpData[1:2]) & 0x1f)
-            tagData = "".join(tmpData)
+            tmpData = bytearray(self.data[baseOffset+valueOffset:][:valueSize])
+            pageFlags = tmpData[1] >> 5
+            tmpData[1] = tmpData[1:2][0] & 0x1f
+            tmpData = bytes(tmpData)
+            tagData = tmpData
         else:
             valueSize = unpack('<H', tag[:2])[0] & 0x1fff
             pageFlags = (unpack('<H', tag[2:])[0] & 0xe000) >> 13
@@ -681,7 +669,7 @@ class ESENT_DB:
 
     def parsePage(self, page):
         # Print the leaf/branch tags
-        for tagNum in range(1,page.record['FirstAvailablePageTag']):
+        for tagNum in page.iterDataTagNums():
             flags, data = page.getTag(tagNum)
             if page.record['PageFlags'] & FLAGS_LEAF > 0:
                 # Leaf page
@@ -701,7 +689,7 @@ class ESENT_DB:
         page = self.getPage(pageNum)
         self.parsePage(page)
 
-        for i in range(1, page.record['FirstAvailablePageTag']):
+        for i in page.iterDataTagNums():
             flags, data = page.getTag(i)
             if page.record['PageFlags'] & FLAGS_LEAF == 0:
                 # Branch page
@@ -744,10 +732,10 @@ class ESENT_DB:
             done = False
             while done is False:
                 page = self.getPage(pageNum)
-                if page.record['FirstAvailablePageTag'] <= 1:
+                if page.tagCount <= page.firstDataTag:
                     # There are no records
                     done = True
-                for i in range(1, page.record['FirstAvailablePageTag']):
+                for i in page.iterDataTagNums():
                     flags, data = page.getTag(i)
                     if page.record['PageFlags'] & FLAGS_LEAF == 0:
                         # Branch page, move on to the next page
@@ -762,7 +750,7 @@ class ESENT_DB:
             cursor['TableData'] = self.__tables[tableName]
             cursor['FatherDataPageNumber'] = catalogEntry['FatherDataPageNumber']
             cursor['CurrentPageData'] = page
-            cursor['CurrentTag']  = 0
+            cursor['CurrentTag']  = page.firstDataTag - 1
             return cursor
         else:
             return None
@@ -770,7 +758,7 @@ class ESENT_DB:
     def __getNextTag(self, cursor):
         page = cursor['CurrentPageData']
 
-        if cursor['CurrentTag'] >= page.record['FirstAvailablePageTag']:
+        if cursor['CurrentTag'] >= page.tagCount:
             # No more data in this page, chau
             return None
 
@@ -790,7 +778,7 @@ class ESENT_DB:
 
         return None
 
-    def getNextRow(self, cursor):
+    def getNextRow(self, cursor, filter_tables = None):
         cursor['CurrentTag'] += 1
 
         tag = self.__getNextTag(cursor)
@@ -804,12 +792,12 @@ class ESENT_DB:
                 return None
             else:
                 cursor['CurrentPageData'] = self.getPage(page.record['NextPageNumber'])
-                cursor['CurrentTag'] = 0
-                return self.getNextRow(cursor)
+                cursor['CurrentTag'] = cursor['CurrentPageData'].firstDataTag - 1
+                return self.getNextRow(cursor, filter_tables = filter_tables)
         else:
-            return self.__tagToRecord(cursor, tag['EntryData'])
+            return self.__tagToRecord(cursor, tag['EntryData'], filter_tables = filter_tables)
 
-    def __tagToRecord(self, cursor, tag):
+    def __tagToRecord(self, cursor, tag, filter_tables = None):
         # So my brain doesn't forget, the data record is composed of:
         # Header
         # Fixed Size Data (ID < 127)
@@ -849,6 +837,9 @@ class ESENT_DB:
         columns = cursor['TableData']['Columns'] 
         
         for column in list(columns.keys()):
+            if filter_tables is not None:
+                if column not in filter_tables:
+                    continue
             columnRecord = columns[column]['Record']
             #columnRecord.dump()
             if columnRecord['Identifier'] <= dataDefinitionHeader['LastFixedSize']:

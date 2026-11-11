@@ -1,22 +1,22 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Karma SMB
-#
-# Author:
-#  Alberto Solino (@agsolino) 
-#  Original idea by @mubix
-#
 # Description:
+#   Karma SMB
+#
 #   The idea of this script is to answer any file read request
-#   with a set of predefined contents based on the extension 
+#   with a set of predefined contents based on the extension
 #   asked, regardless of the sharename and/or path.
-#   When executing this script w/o a config file the pathname 
-#   file contents will be sent for every request. 
+#   When executing this script w/o a config file the pathname
+#   file contents will be sent for every request.
 #   If a config file is specified, format should be this way:
 #      <extension> = <pathname>
 #   for example:
@@ -27,10 +27,10 @@
 #   The SMB2 support works with a caveat. If two different
 #   filenames at the same share are requested, the first
 #   one will work and the second one will not work if the request
-#   is performed right away. This seems related to the 
+#   is performed right away. This seems related to the
 #   QUERY_DIRECTORY request, where we return the files available.
 #   In the first try, we return the file that was asked to open.
-#   In the second try, the client will NOT ask for another 
+#   In the second try, the client will NOT ask for another
 #   QUERY_DIRECTORY but will use the cached one. This time the new file
 #   is not there, so the client assumes it doesn't exist.
 #   After a few seconds, looks like the client cache is cleared and
@@ -39,18 +39,20 @@
 #
 #   SMB1 seems to be working fine on that scenario.
 #
-#   ToDo:
-#   [ ] A lot of testing needed under different OSes. 
+# Author:
+#   Alberto Solino (@agsolino)
+#   Original idea by @mubix
+#
+# ToDo:
+#   [ ] A lot of testing needed under different OSes.
 #       I'm still not sure how reliable this approach is.
 #   [ ] Add support for other SMB read commands. Right now just
 #       covering SMB_COM_NT_CREATE_ANDX
-#   [ ] Disable write request, now if the client tries to copy 
-#       a file back to us, it will overwrite the files we're 
+#   [ ] Disable write request, now if the client tries to copy
+#       a file back to us, it will overwrite the files we're
 #       hosting. *CAREFUL!!!*
 #
 
-from __future__ import division
-from __future__ import print_function
 import sys
 import os
 import argparse
@@ -63,13 +65,13 @@ except ImportError:
 from threading import Thread
 
 from impacket.examples import logger
-from impacket import smbserver, smb, version
+from impacket import smbserver, smb, version, wintime
 import impacket.smb3structs as smb2
 from impacket.smb import FILE_OVERWRITE, FILE_OVERWRITE_IF, FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE
 from impacket.nt_errors import STATUS_USER_SESSION_DELETED, STATUS_SUCCESS, STATUS_ACCESS_DENIED, STATUS_NO_MORE_FILES, \
     STATUS_OBJECT_PATH_NOT_FOUND
 from impacket.smbserver import SRVSServer, decodeSMBString, findFirst2, STATUS_SMB_BAD_TID, encodeSMBString, \
-    getFileTime, queryPathInformation
+    queryPathInformation
 
 
 class KarmaSMBServer(Thread):
@@ -85,7 +87,7 @@ class KarmaSMBServer(Thread):
         smbConfig.set('global','server_name','server_name')
         smbConfig.set('global','server_os','UNIX')
         smbConfig.set('global','server_domain','WORKGROUP')
-        smbConfig.set('global','log_file','smb.log')
+        smbConfig.set('global','log_file','None')
         smbConfig.set('global','credentials_file','')
 
         # IPC always needed
@@ -377,12 +379,10 @@ class KarmaSMBServer(Thread):
             targetFile = '/'
         
         # 2. We change the filename in the request for our targetFile
-        try:
-            ntCreateRequest['Buffer'] = targetFile.encode('utf-16le')
-        except UnicodeDecodeError:
-            import sys
-            ntCreateRequest['Buffer'] = targetFile.decode(sys.getfilesystemencoding()).encode('utf-16le')
-        ntCreateRequest['NameLength'] = len(targetFile)*2
+        if isinstance(targetFile, bytes):
+            targetFile = targetFile.decode(sys.getfilesystemencoding())
+        ntCreateRequest['Buffer'] = targetFile.encode('utf-16le')
+        ntCreateRequest['NameLength'] = len(ntCreateRequest['Buffer'])
         recvPacket['Data'] = ntCreateRequest.getData()
 
         # 3. We call the original call with our modified data
@@ -419,10 +419,10 @@ class KarmaSMBServer(Thread):
             infoRecord['EaSize']            = 0
             infoRecord['EndOfFile']         = size
             infoRecord['AllocationSize']    = size
-            infoRecord['CreationTime']      = getFileTime(ctime)
-            infoRecord['LastAccessTime']    = getFileTime(atime)
-            infoRecord['LastWriteTime']     = getFileTime(mtime)
-            infoRecord['LastChangeTime']    = getFileTime(mtime)
+            infoRecord['CreationTime']      = wintime.posix_to_filetime(ctime)
+            infoRecord['LastAccessTime']    = wintime.posix_to_filetime(atime)
+            infoRecord['LastWriteTime']     = wintime.posix_to_filetime(mtime)
+            infoRecord['LastChangeTime']    = wintime.posix_to_filetime(mtime)
             infoRecord['ShortName']         = b'\x00'*24
             #infoRecord['FileName']          = os.path.basename(origName).encode('utf-16le')
             infoRecord['FileName']          = origName.encode('utf-16le')
@@ -592,8 +592,6 @@ class KarmaSMBServer(Thread):
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
     parser = argparse.ArgumentParser(add_help = False, description = "For every file request received, this module will "
                                                                      "return the pathname contents")
@@ -603,6 +601,8 @@ if __name__ == '__main__':
     parser.add_argument('-config', type=argparse.FileType('r'), metavar = 'pathname', help='config file name to map '
                         'extensions to files to deliver. For those extensions not present, pathname will be delivered')
     parser.add_argument('-smb2support', action='store_true', default=False, help='SMB2 Support (experimental!)')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
+    parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
 
 
     if len(sys.argv)==1:
@@ -614,6 +614,9 @@ if __name__ == '__main__':
     except Exception as e:
        logging.critical(str(e))
        sys.exit(1)
+
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     s = KarmaSMBServer(options.smb2support)
     s.setDefaultFile(os.path.normpath(options.fileName))

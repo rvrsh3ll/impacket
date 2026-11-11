@@ -1,22 +1,24 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author: Alberto Solino (@agsolino)
-#
 # Description:
-#     Simple MQTT example aimed at playing with different login options. Can be converted into a account/password
-#     brute forcer quite easily.
+#   Simple MQTT example aimed at playing with different login options. Can be converted into a account/password
+#   brute forcer quite easily.
+#
+# Author:
+#   Alberto Solino (@agsolino)
 #
 # Reference for:
-#  MQTT and Structure
+#   MQTT and Structure
 #
-#
-
-from __future__ import print_function
 
 import argparse
 import logging
@@ -50,8 +52,6 @@ class MQTT_LOGIN:
         logging.info(CONNECT_ACK_ERROR_MSGS[0])
 
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
     parser = argparse.ArgumentParser(add_help=False,
                                      description="MQTT login check")
@@ -61,6 +61,7 @@ if __name__ == '__main__':
     parser.add_argument('-ssl', action='store_true', help='turn SSL on')
     parser.add_argument('-port', action='store', default='1883', help='port to connect to (default 1883)')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
 
     try:
         options = parser.parse_args()
@@ -68,12 +69,8 @@ if __name__ == '__main__':
         logging.error(str(e))
         sys.exit(1)
 
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     domain, username, password, address = parse_target(options.target)
 

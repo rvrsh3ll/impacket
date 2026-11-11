@@ -1,11 +1,12 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Authors: Alberto Solino (@agsolino)
-#          Kacper Nowak (@kacpern)
 #
 # Description:
 #   RFC 4511 Minimalistic implementation. We don't need much functionality yet
@@ -14,7 +15,10 @@
 #   as we change them.
 #   Adding [MS-ADTS] specific functionality
 #
-
+# Authors:
+#   Alberto Solino (@agsolino)
+#   Kacper Nowak (@kacpern)
+#
 from pyasn1.codec.ber import encoder, decoder
 from pyasn1.type import univ, namedtype, namedval, tag, constraint
 
@@ -133,6 +137,7 @@ class MessageID(univ.Integer):
 
 
 class LDAPString(univ.OctetString):
+    # LDAPString ::= OCTET STRING -- UTF-8 encoded, -- [ISO10646] characters
     encoding = 'utf-8'
 
 
@@ -153,11 +158,13 @@ class AttributeDescription(LDAPString):
 
 
 class AttributeValue(univ.OctetString):
-    pass
+    # AttributeValue ::= OCTET STRING
+    encoding = 'utf-8'
 
 
 class AssertionValue(univ.OctetString):
-    pass
+    # AssertionValue ::= OCTET STRING
+    encoding = 'utf-8'
 
 
 class MatchingRuleID(LDAPString):

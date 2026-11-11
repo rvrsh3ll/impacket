@@ -1,35 +1,37 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Target utilities
+# Description:
+#   Target utilities
+#
+#   Classes for handling specified targets and keeping state of which targets have been processed
+#   Format of targets are based in URI syntax
+#       scheme://netloc/path
+#   where:
+#       scheme: the protocol to target (e.g. 'smb', 'mssql', 'all')
+#       netloc: int the form of domain\username@host:port (domain\username and port are optional, and don't forget
+#               to escape the '\')
+#       path: only used by specific attacks (e.g. HTTP attack).
+#
+#   Some examples:
+#       smb://1.1.1.1: It will target host 1.1.1.1 (protocol SMB) with any user connecting
+#       mssql://contoso.com\joe@10.1.1.1: It will target host 10.1.1.1 (protocol MSSQL) only when contoso.com\joe is
+#       connecting.
 #
 # Author:
-#  Alberto Solino (@agsolino)
-#  Dirk-jan Mollema / Fox-IT (https://www.fox-it.com)
+#   Alberto Solino (@agsolino)
+#   Dirk-jan Mollema / Fox-IT (https://www.fox-it.com)
 #
-# Description:
-#     Classes for handling specified targets and keeping state of which targets have been processed
-#     Format of targets are based in URI syntax
-#         scheme://netloc/path
-#     where:
-#         scheme: the protocol to target (e.g. 'smb', 'mssql', 'all')
-#         netloc: int the form of domain\username@host:port (domain\username and port are optional, and don't forget
-#                 to escape the '\')
-#         path: only used by specific attacks (e.g. HTTP attack).
+# ToDo:
+#   [ ]: Expand the ALL:// to all the supported protocols
 #
-#     Some examples:
-#
-#         smb://1.1.1.1: It will target host 1.1.1.1 (protocol SMB) with any user connecting
-#         mssql://contoso.com\joe@10.1.1.1: It will target host 10.1.1.1 (protocol MSSQL) only when contoso.com\joe is
-#         connecting.
-#
-#  ToDo:
-# [ ]: Expand the ALL:// to all the supported protocols
-
-
 import os
 import random
 import time
@@ -46,6 +48,12 @@ class TargetsProcessor:
         # Here we store the attacks that already finished, mostly the ones that have usernames, since the
         # other ones will never finish.
         self.finishedAttacks = []
+        self.failedAttacks = []
+        # Full history of every successful attack, across --keep-relaying cycles. Unlike
+        # finishedAttacks (which reloadTargets(full_reload=True) clears so targets can be
+        # re-attacked), this is never cleared, so the `finished_attacks` socks command can
+        # still show attacks from earlier cycles.
+        self.allFinishedAttacks = []
         self.protocolClients = protocolClients
         if targetListFile is None:
             self.filename = None
@@ -59,8 +67,8 @@ class TargetsProcessor:
             # Randomize the targets based
             random.shuffle(self.originalTargets)
 
-        self.generalCandidates = [x for x in self.originalTargets if x.username is None]
-        self.namedCandidates = [x for x in self.originalTargets if x.username is not None]
+        self.reloadTargets(full_reload=True)
+
 
     @staticmethod
     def processTarget(target, protocolClients):
@@ -93,22 +101,39 @@ class TargetsProcessor:
         if len(self.originalTargets) == 0:
             LOG.critical("Warning: no valid targets specified!")
 
-        self.generalCandidates = [x for x in self.originalTargets if x not in self.finishedAttacks and x.username is None]
-        self.namedCandidates = [x for x in self.originalTargets if x not in self.finishedAttacks and x.username is not None]
+        self.reloadTargets()
 
-    def logTarget(self, target, gotRelay = False, gotUsername = None):
+
+    def reloadTargets(self, full_reload=False):
+        if full_reload:
+            self.finishedAttacks = []
+            self.failedAttacks = []
+        self.generalCandidates = [x for x in self.originalTargets if x not in self.finishedAttacks and x not in self.failedAttacks and x.username is None]
+        self.namedCandidates = [x for x in self.originalTargets if x not in self.finishedAttacks and x not in self.failedAttacks  and x.username is not None]
+
+    def registerTarget(self, target, gotRelay = False, gotUsername = None):
         # If the target has a username, we can safely remove it from the list. Mission accomplished.
-        if gotRelay is True:
-            if target.username is not None:
+        if target.username is not None:
+            if gotRelay:
                 self.finishedAttacks.append(target)
-            elif gotUsername is not None:
-                # We have data about the username we relayed the connection for,
-                # for a target that didn't have username specified.
-                # Let's log it
+                self.allFinishedAttacks.append(target)
+            else:
+                self.failedAttacks.append(target)
+        elif gotUsername is not None:
+            # We have data about the username we relayed the connection for,
+            # for a target that didn't have username specified.
+            # Let's log it
+            if target.scheme.find('http') == 0 and target.query:
+                newTarget = urlparse('%s://%s@%s%s?%s' % (target.scheme, gotUsername.replace('/','\\'), target.netloc, target.path, target.query))
+            else:
                 newTarget = urlparse('%s://%s@%s%s' % (target.scheme, gotUsername.replace('/','\\'), target.netloc, target.path))
+            if gotRelay:
                 self.finishedAttacks.append(newTarget)
+                self.allFinishedAttacks.append(newTarget)
+            else:
+                self.failedAttacks.append(newTarget)
 
-    def getTarget(self, identity=None):
+    def getTarget(self, identity=None, multiRelay=True):
         # ToDo: We should have another list of failed attempts (with user) and check that inside this method so we do not
         # retry those targets.
         if identity is not None and len(self.namedCandidates) > 0:
@@ -130,19 +155,33 @@ class TargetsProcessor:
         if len(self.generalCandidates) > 0:
             if identity is not None:
                 for target in self.generalCandidates:
-                    tmpTarget = '%s://%s@%s' % (target.scheme, identity.replace('/', '\\'), target.netloc)
+                    tmpTarget = '%s://%s@%s' % (target.scheme, identity.replace('/', '\\'), target.netloc + target.path)
                     match = [x for x in self.finishedAttacks if x.geturl().upper() == tmpTarget.upper()]
-                    if len(match) == 0:
+                    fail_match = [x for x in self.failedAttacks if x.geturl().upper() == tmpTarget.upper()]
+                    print(self.failedAttacks)
+                    if len(match) == 0 and len(fail_match) == 0:
                         self.generalCandidates.remove(target)
                         return target
                 LOG.debug("No more targets for user %s" % identity)
+                return None
+            # Multirelay feature is disabled, general candidates are attacked just one time
+            elif multiRelay == False:
+                for target in self.generalCandidates:
+                    match = [x for x in self.finishedAttacks if x.hostname == target.netloc and x.scheme == target.scheme]
+                    if len(match) == 0:
+                        self.generalCandidates.remove(target)
+                        return target
+                LOG.debug("No more targets")
                 return None
             else:
                 return self.generalCandidates.pop()
         else:
             if len(self.originalTargets) > 0:
+                # Remove credentials from the URLs (otherwise they won't ever match)
+                finishedAttacks = [an_atk._replace(netloc=an_atk.hostname) for an_atk in self.finishedAttacks]
+                failedAttacks = [an_atk._replace(netloc=an_atk.hostname) for an_atk in self.failedAttacks]
                 self.generalCandidates = [x for x in self.originalTargets if
-                                          x not in self.finishedAttacks and x.username is None]
+                                          x not in finishedAttacks and x not in failedAttacks and x.username is None]
 
         if len(self.generalCandidates) == 0:
             if len(self.namedCandidates) == 0:
@@ -153,7 +192,7 @@ class TargetsProcessor:
                 LOG.debug("No more targets for user %s" % identity)
             return None
         else:
-            return self.getTarget(identity)
+            return self.getTarget(identity, multiRelay)
 
 class TargetsFileWatcher(Thread):
     def __init__(self,targetprocessor):

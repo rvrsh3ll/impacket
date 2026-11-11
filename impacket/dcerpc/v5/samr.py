@@ -1,25 +1,28 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   [MS-SAMR] Interface implementation
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
+#   at https://github.com/fortra/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
 #   They are located at the end of this file.
 #   Helper functions start with "h"<name of the call>.
 #   There are test cases for them too.
 #
-from __future__ import division
-from __future__ import print_function
+# Author:
+#   Alberto Solino (@agsolino)
+#
 from binascii import unhexlify
 
 from impacket.dcerpc.v5.ndr import NDRCALL, NDR, NDRSTRUCT, NDRUNION, NDRPOINTER, NDRUniConformantArray, \
@@ -1064,6 +1067,12 @@ class SAMPR_USER_INTERNAL5_INFORMATION_NEW(NDRSTRUCT):
         ('PasswordExpired', UCHAR),
     )
 
+class SAMPR_USER_RESET_INFORMATION(NDRSTRUCT):
+    structure = (
+        ('ExtendedWhichFields', ULONG),
+        ('ResetData', RPC_UNICODE_STRING),
+    )
+
 # 2.2.7.28 USER_INFORMATION_CLASS
 class USER_INFORMATION_CLASS(NDRENUM):
     class enumItems(Enum):
@@ -1090,6 +1099,7 @@ class USER_INFORMATION_CLASS(NDRENUM):
         UserInternal5Information    = 24
         UserInternal4InformationNew = 25
         UserInternal5InformationNew = 26
+        UserResetInformation        = 30
 
 # 2.2.7.29 SAMPR_USER_INFO_BUFFER
 class SAMPR_USER_INFO_BUFFER(NDRUNION):
@@ -1117,6 +1127,7 @@ class SAMPR_USER_INFO_BUFFER(NDRUNION):
         USER_INFORMATION_CLASS.UserInternal5Information   : ('Internal5', SAMPR_USER_INTERNAL5_INFORMATION),
         USER_INFORMATION_CLASS.UserInternal4InformationNew: ('Internal4New', SAMPR_USER_INTERNAL4_INFORMATION_NEW),
         USER_INFORMATION_CLASS.UserInternal5InformationNew: ('Internal5New', SAMPR_USER_INTERNAL5_INFORMATION_NEW),
+        USER_INFORMATION_CLASS.UserResetInformation       : ('Reset', SAMPR_USER_RESET_INFORMATION),
     }
 
 class PSAMPR_USER_INFO_BUFFER(NDRPOINTER):
@@ -1386,9 +1397,38 @@ class USER_PROPERTIES(Structure):
         ('Reserved3','<H=0'),
         ('Reserved4','96s=""'),
         ('PropertySignature','<H=0x50'),
-        ('PropertyCount','<H=0'),
-        ('UserProperties',':'),
     )
+
+
+def unpack_user_properties(data):
+    user_properties = USER_PROPERTIES(data)
+    property_count_offset = len(user_properties)
+    properties_end = 12 + user_properties['Length']
+
+    # MS-SAMR 3.1.1.8.11.1.1 says PropertyCount is omitted when there are zero
+    # USER_PROPERTY entries and the total structure size becomes 0x6f bytes.
+    # With the fixed 12-byte prefix and trailing Reserved5 byte, that means the
+    # length-delimited portion ends at the PropertySignature for header-only
+    # blobs, so PropertyCount must be parsed conditionally.
+    if properties_end < property_count_offset:
+        raise struct.error("USER_PROPERTIES length shorter than the fixed header")
+
+    if len(data) <= properties_end:
+        raise struct.error("USER_PROPERTIES missing Reserved5")
+
+    if properties_end == property_count_offset:
+        user_properties['PropertyCount'] = 0
+        user_properties['Reserved5'] = data[properties_end:properties_end+1]
+        return user_properties, 0, b''
+
+    if len(data) < property_count_offset + 2:
+        raise struct.error("USER_PROPERTIES missing PropertyCount")
+
+    property_count = struct.unpack('<H', data[property_count_offset:property_count_offset+2])[0]
+    user_properties['PropertyCount'] = property_count
+    user_properties['Reserved5'] = data[properties_end:properties_end+1]
+
+    return user_properties, property_count, data[property_count_offset+2:properties_end]
 
 # 2.2.10.2 USER_PROPERTY
 class USER_PROPERTY(Structure):
@@ -2573,7 +2613,18 @@ def hSamrCreateUser2InDomain(dce, domainHandle, name, accountType=USER_NORMAL_AC
     request['Name'] = name
     request['AccountType'] = accountType
     request['DesiredAccess'] = desiredAccess
-    return dce.request(request)
+    try:
+        return dce.request(request)
+    except DCERPCSessionError as e:
+        if e.error_code == 0xc0000022:
+            raise Exception("Authenticating account doesn't have the right to create a new machine account!")
+        elif e.error_code == 0xc00002e7:
+            raise Exception("Authenticating account's machine account quota exceeded!")
+        elif e.error_code == 0xc0000062:
+            raise Exception("Account name not accepted, maybe the '$' at the end is missing?")
+        else:
+            raise e
+
 
 def hSamrCreateUserInDomain(dce, domainHandle, name, desiredAccess=GROUP_ALL_ACCESS):
     request = SamrCreateUserInDomain()
@@ -2735,15 +2786,38 @@ def hSamrGetAliasMembership(dce, domainHandle, sidArray):
     request['SidArray']['Count'] = len(sidArray['Sids'])
     return dce.request(request)
 
-def hSamrChangePasswordUser(dce, userHandle, oldPassword, newPassword):
+def hSamrChangePasswordUser(dce, userHandle, oldPassword, newPassword, oldPwdHashNT='', newPwdHashLM='', newPwdHashNT=''):
     request = SamrChangePasswordUser()
     request['UserHandle'] = userHandle
 
     from impacket import crypto, ntlm
 
-    oldPwdHashNT = ntlm.NTOWFv1(oldPassword)
-    newPwdHashNT = ntlm.NTOWFv1(newPassword)
-    newPwdHashLM = ntlm.LMOWFv1(newPassword)
+    if oldPwdHashNT == '':
+        oldPwdHashNT = ntlm.NTOWFv1(oldPassword)
+    else:
+        # Let's convert the hashes to binary form, if not yet
+        try:
+            oldPwdHashNT = unhexlify(oldPwdHashNT)
+        except:
+            pass
+
+    if newPwdHashLM == '':
+        newPwdHashLM = ntlm.LMOWFv1(newPassword)
+    else:
+        # Let's convert the hashes to binary form, if not yet
+        try:
+            newPwdHashLM = unhexlify(newPwdHashLM)
+        except:
+            pass
+
+    if newPwdHashNT == '':
+        newPwdHashNT = ntlm.NTOWFv1(newPassword)
+    else:
+        # Let's convert the hashes to binary form, if not yet
+        try:
+            newPwdHashNT = unhexlify(newPwdHashNT)
+        except:
+            pass
 
     request['LmPresent'] = 0
     request['OldLmEncryptedWithNewLm'] = NULL
@@ -2784,16 +2858,18 @@ def hSamrUnicodeChangePasswordUser2(dce, serverName='\x00', userName='', oldPass
         except:
             pass
 
+    if isinstance(newPassword, bytes):
+        import sys
+        newPassword = newPassword.decode(sys.getfilesystemencoding())
+
     newPwdHashNT = ntlm.NTOWFv1(newPassword)
 
     samUser = SAMPR_USER_PASSWORD()
-    try:
-        samUser['Buffer'] = b'A'*(512-len(newPassword)*2) + newPassword.encode('utf-16le')
-    except UnicodeDecodeError:
-        import sys
-        samUser['Buffer'] = b'A'*(512-len(newPassword)*2) + newPassword.decode(sys.getfilesystemencoding()).encode('utf-16le')
+    encoded_password = newPassword.encode('utf-16le')
 
-    samUser['Length'] = len(newPassword)*2
+    samUser['Buffer'] = b'A' * (512 - len(encoded_password)) + encoded_password
+
+    samUser['Length'] = len(encoded_password)
     pwdBuff = samUser.getData()
 
     rc4 = ARC4.new(oldPwdHashNT)
@@ -2889,7 +2965,7 @@ def hSamrSetPasswordInternal4New(dce, userHandle, password):
     request = SamrSetInformationUser2()
     request['UserHandle'] = userHandle
     request['UserInformationClass'] = USER_INFORMATION_CLASS.UserInternal4InformationNew
-    request['Buffer']['tag'] =  USER_INFORMATION_CLASS.UserInternal4InformationNew
+    request['Buffer']['tag'] = USER_INFORMATION_CLASS.UserInternal4InformationNew
     request['Buffer']['Internal4New']['I1']['WhichFields'] = 0x01000000 | 0x08000000
 
     request['Buffer']['Internal4New']['I1']['UserName'] = NULL
@@ -2924,6 +3000,31 @@ def hSamrSetPasswordInternal4New(dce, userHandle, password):
     cipher = ARC4.new(key)
     buffercrypt = cipher.encrypt(pwdbuff) + salt
 
-
     request['Buffer']['Internal4New']['UserPassword']['Buffer'] = buffercrypt
+    return dce.request(request)
+
+def hSamrSetNTInternal1(dce, userHandle, password, hashNT=''):
+    request = SamrSetInformationUser()
+    request['UserHandle'] = userHandle
+    request['UserInformationClass'] = USER_INFORMATION_CLASS.UserInternal1Information
+    request['Buffer']['tag'] = USER_INFORMATION_CLASS.UserInternal1Information
+
+    from impacket import crypto, ntlm
+
+    if hashNT == '':
+        hashNT = ntlm.NTOWFv1(password)
+    else:
+        # Let's convert the hashes to binary form, if not yet
+        try:
+            hashNT = unhexlify(hashNT)
+        except:
+            pass
+
+    session_key = dce.get_rpc_transport().get_smb_connection().getSessionKey()
+
+    request['Buffer']['Internal1']['EncryptedNtOwfPassword'] = crypto.SamEncryptNTLMHash(hashNT, session_key)
+    request['Buffer']['Internal1']['EncryptedLmOwfPassword'] = NULL
+    request['Buffer']['Internal1']['NtPasswordPresent'] = 1
+    request['Buffer']['Internal1']['LmPasswordPresent'] = 0
+
     return dce.request(request)

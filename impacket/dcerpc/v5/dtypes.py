@@ -1,22 +1,27 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   [MS-DTYP] Interface mini implementation
 #
-from __future__ import division
-from __future__ import print_function
-from struct import pack
+# Author:
+#   Alberto Solino (@agsolino)
+#
+
+from struct import pack, unpack
 from six import binary_type
 
 from impacket.dcerpc.v5.ndr import NDRULONG, NDRUHYPER, NDRSHORT, NDRLONG, NDRPOINTER, NDRUniConformantArray, \
     NDRUniFixedArray, NDR, NDRHYPER, NDRSMALL, NDRPOINTERNULL, NDRSTRUCT, \
     NDRUSMALL, NDRBOOLEAN, NDRUSHORT, NDRFLOAT, NDRDOUBLEFLOAT, NULL
+from impacket.structure import Structure
 
 DWORD = NDRULONG
 BOOL = NDRULONG
@@ -64,11 +69,10 @@ class WIDESTR(NDRUniFixedArray):
 
     def __setitem__(self, key, value):
         if key == 'Data':
-            try:
-                self.fields[key] = value.encode('utf-16le')
-            except UnicodeDecodeError:
+            if isinstance(value, bytes):
                 import sys
-                self.fields[key] = value.decode(sys.getfilesystemencoding()).encode('utf-16le')
+                value = value.decode(sys.getfilesystemencoding())
+            self.fields[key] = value.encode('utf-16le')
 
             self.data = None        # force recompute
         else:
@@ -105,15 +109,11 @@ class STR(NDRSTRUCT):
 
     def __setitem__(self, key, value):
         if key == 'Data':
-            try:
-                if not isinstance(value, binary_type):
-                    self.fields[key] = value.encode('utf-8')
-                else:
-                    # if it is a binary type (str in Python 2, bytes in Python 3), then we assume it is a raw buffer
-                    self.fields[key] = value
-            except UnicodeDecodeError:
-                import sys
-                self.fields[key] = value.decode(sys.getfilesystemencoding()).encode('utf-8')
+            if not isinstance(value, binary_type):
+                self.fields[key] = value.encode('utf-8')
+            else:
+                # If it is bytes, then we assume it is a raw buffer.
+                self.fields[key] = value
             self.fields['MaximumCount'] = None
             self.fields['ActualCount'] = None
             self.data = None        # force recompute
@@ -166,11 +166,10 @@ class WSTR(NDRSTRUCT):
 
     def __setitem__(self, key, value):
         if key == 'Data':
-            try:
-                self.fields[key] = value.encode('utf-16le')
-            except UnicodeDecodeError:
+            if isinstance(value, bytes):
                 import sys
-                self.fields[key] = value.decode(sys.getfilesystemencoding()).encode('utf-16le')
+                value = value.decode(sys.getfilesystemencoding())
+            self.fields[key] = value.encode('utf-16le')
             self.fields['MaximumCount'] = None
             self.fields['ActualCount'] = None
             self.data = None        # force recompute
@@ -369,9 +368,7 @@ class RPC_UNICODE_STRING(NDRSTRUCT):
 
     def __setitem__(self, key, value):
         if key == 'Data' and isinstance(value, NDR) is False:
-            try:
-                value.encode('utf-16le')
-            except UnicodeDecodeError:
+            if isinstance(value, bytes):
                 import sys
                 value = value.decode(sys.getfilesystemencoding())
             self['Length'] = len(value)*2
@@ -439,7 +436,40 @@ class PULARGE_INTEGER(NDRPOINTER):
         ('Data', ULARGE_INTEGER),
     )
 
+# 2.4.2.2 SID--Packet Representation
+# This SID structure is a packet representation of the SID type for use by block protocols.
+class SID_IDENTIFIER_AUTHORITY(Structure):
+    structure = (
+        ('Value', '6s'),
+    )
+
+class SID(Structure):
+    structure = (
+        ('Revision', '<B'),
+        ('SubAuthorityCount', '<B'),
+        ('IdentifierAuthority', ':', SID_IDENTIFIER_AUTHORITY),
+        ('SubLen', '_-SubAuthority', 'self["SubAuthorityCount"]*4'),
+        ('SubAuthority', ':'),
+    )
+
+    def formatCanonical(self):
+        ans = 'S-%d-%d' % (self['Revision'], ord(self['IdentifierAuthority']['Value'][5:6]))
+        for i in range(self['SubAuthorityCount']):
+            ans += '-%d' % (unpack('<L', self['SubAuthority'][i * 4:i * 4 + 4])[0])
+        return ans
+
+    def fromCanonical(self, canonical):
+        items = canonical.split('-')
+        self['Revision'] = int(items[1])
+        self['IdentifierAuthority'] = SID_IDENTIFIER_AUTHORITY()
+        self['IdentifierAuthority']['Value'] = b'\x00\x00\x00\x00\x00' + pack('B', int(items[2]))
+        self['SubAuthorityCount'] = len(items) - 3
+        self['SubAuthority'] = b''
+        for i in range(self['SubAuthorityCount']):
+            self['SubAuthority'] += pack('<L', int(items[i + 3]))
+
 # 2.4.2.3 RPC_SID
+# The RPC_SID structure is an IDL representation of the SID type for use by RPC-based protocols.
 class DWORD_ARRAY(NDRUniConformantArray):
     item = '<L'
 

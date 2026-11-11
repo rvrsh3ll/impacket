@@ -1,35 +1,39 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   [MS-DCOM] Interface implementation
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
+#   at https://github.com/fortra/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
-#   They are located at the end of this file. 
+#   They are located at the end of this file.
 #   Helper functions start with "h"<name of the call>.
-#   There are test cases for them too. 
+#   There are test cases for them too.
+#
+# Author:
+#   Alberto Solino (@agsolino)
 #
 # ToDo:
-# [X] Use the same DCE connection for all the calls. Right now is connecting to the remote machine
-#     for each call, making it slower.
+#   [X] Use the same DCE connection for all the calls. Right now is connecting to the remote machine
+#       for each call, making it slower.
+#   [X] Implement a ping mechanism, otherwise the garbage collector at the server shuts down the objects if
+#       not used, returning RPC_E_DISCONNECTED
 #
-# [X] Implement a ping mechanism, otherwise the garbage collector at the server shuts down the objects if 
-#    not used, returning RPC_E_DISCONNECTED
-#
-from __future__ import division
-from __future__ import print_function
+
+import ipaddress
 import socket
 from struct import pack
-from threading import Timer, currentThread
+from threading import Timer, current_thread
 
 from impacket.dcerpc.v5.ndr import NDRCALL, NDRSTRUCT, NDRPOINTER, NDRUniConformantArray, NDRTLSTRUCT, UNKNOWNDATA
 from impacket.dcerpc.v5.dtypes import LPWSTR, ULONGLONG, HRESULT, GUID, USHORT, WSTR, DWORD, LPLONG, LONG, PGUID, ULONG, \
@@ -65,6 +69,34 @@ IID_IRemUnknown               = uuidtup_to_bin(('00000131-0000-0000-C000-0000000
 IID_IRemUnknown2              = uuidtup_to_bin(('00000143-0000-0000-C000-000000000046','0.0'))
 IID_IUnknown                  = uuidtup_to_bin(('00000000-0000-0000-C000-000000000046','0.0'))
 IID_IClassFactory             = uuidtup_to_bin(('00000001-0000-0000-C000-000000000046','0.0'))
+
+# Protocol Identifiers, from [c706] Annex I
+TOWERID_OSI_TP4 = 0x05
+TOWERID_OSI_CLNS = 0x06
+TOWERID_DOD_TCP = 0x0007
+TOWERID_DOD_UDP = 0x08
+TOWERID_DOD_IP = 0x09
+TOWERID_RPC_connectionless = 0x0a
+TOWERID_RPC_connectionoriented = 0x0b
+TOWERID_DNA_Session_Control = 0x02
+TOWERID_DNA_Session_Control_V3 = 0x03
+TOWERID_DNA_NSP_Transport = 0x04
+TOWERID_DNA_Routing = 0x06
+TOWERID_Named_Pipes = 0x10
+TOWERID_NetBIOS_11 = 0x11
+TOWERID_NetBEUI = 0x12
+TOWERID_Netware_SPX = 0x13
+TOWERID_Netware_IPX = 0x14
+TOWERID_Appletalk_Stream = 0x16
+TOWERID_Appletalk_Datagram = 0x17
+TOWERID_Appletalk = 0x18
+TOWERID_NetBIOS_19 = 0x19
+TOWERID_VINES_SPP = 0x1A
+TOWERID_VINES_IPC = 0x1B
+TOWERID_StreetTalk = 0x1C
+TOWERID_Unix_Domain_socket = 0x20
+TOWERID_null = 0x21
+TOWERID_NetBIOS_22 = 0x22
 
 class DCERPCSessionError(DCERPCException):
     def __init__(self, error_string=None, error_code=None, packet=None):
@@ -164,15 +196,27 @@ class handle_t(NDRSTRUCT):
 
 # 2.2.11 COMVERSION
 class COMVERSION(NDRSTRUCT):
+    default_major_version = 5
+    default_minor_version = 7
+
     structure = (
         ('MajorVersion',USHORT),
         ('MinorVersion',USHORT),
     )
+
+    @classmethod
+    def set_default_version(cls, major_version=None, minor_version=None):
+        # Set default dcom version for all new COMVERSION objects.
+        if major_version is not None:
+            cls.default_major_version = major_version
+        if minor_version is not None:
+            cls.default_minor_version = minor_version
+
     def __init__(self, data = None,isNDR64 = False):
         NDRSTRUCT.__init__(self, data, isNDR64)
         if data is None:
-            self['MajorVersion'] = 5
-            self['MinorVersion'] = 7
+            self['MajorVersion'] = self.default_major_version
+            self['MinorVersion'] = self.default_minor_version
 
 class PCOMVERSION(NDRPOINTER):
     referent = (
@@ -949,7 +993,7 @@ class DCOMConnection:
     PORTMAPS = {}
 
     def __init__(self, target, username='', password='', domain='', lmhash='', nthash='', aesKey='', TGT=None, TGS=None,
-                 authLevel=RPC_C_AUTHN_LEVEL_PKT_PRIVACY, oxidResolver=False, doKerberos=False, kdcHost=None):
+                 authLevel=RPC_C_AUTHN_LEVEL_PKT_PRIVACY, oxidResolver=False, doKerberos=False, kdcHost=None, remoteHost=None):
         self.__target = target
         self.__userName = username
         self.__password = password
@@ -964,6 +1008,7 @@ class DCOMConnection:
         self.__oxidResolver = oxidResolver
         self.__doKerberos = doKerberos
         self.__kdcHost = kdcHost
+        self.__remoteHost = remoteHost
         self.initConnection()
 
     @classmethod
@@ -1044,6 +1089,10 @@ class DCOMConnection:
         stringBinding = r'ncacn_ip_tcp:%s' % self.__target
         rpctransport = transport.DCERPCTransportFactory(stringBinding)
 
+        if self.__remoteHost:
+            rpctransport.setRemoteHost(self.__remoteHost)
+            rpctransport.setRemoteName(self.__target)
+
         if hasattr(rpctransport, 'set_credentials') and len(self.__userName) >=0:
             # This method exists only for selected protocol sequences.
             rpctransport.set_credentials(self.__userName, self.__password, self.__domain, self.__lmhash, self.__nthash,
@@ -1066,29 +1115,44 @@ class DCOMConnection:
         return DCOMConnection.PORTMAPS[self.__target]
 
     def disconnect(self):
-        if DCOMConnection.PINGTIMER is not None:
+        # https://github.com/fortra/impacket/issues/1039
+        if self.__target in DCOMConnection.PORTMAPS.keys():
             del(DCOMConnection.PORTMAPS[self.__target])
+        if self.__target in DCOMConnection.OID_SET.keys():
             del(DCOMConnection.OID_SET[self.__target])
-            if len(DCOMConnection.PORTMAPS) == 0:
-                # This means there are no more clients using this object, kill it
-                DCOMConnection.PINGTIMER.cancel()
-                DCOMConnection.PINGTIMER.join()
-                DCOMConnection.PINGTIMER = None
+        if DCOMConnection.PINGTIMER and len(DCOMConnection.PORTMAPS) == 0:
+            DCOMConnection.PINGTIMER.cancel()
+            DCOMConnection.PINGTIMER.join()
+            DCOMConnection.PINGTIMER = None
         if self.__target in INTERFACE.CONNECTIONS:
-            del(INTERFACE.CONNECTIONS[self.__target][currentThread().getName()])
+            del(INTERFACE.CONNECTIONS[self.__target][current_thread().name])
         self.__portmap.disconnect()
         #print INTERFACE.CONNECTIONS
 
 class CLASS_INSTANCE:
-    def __init__(self, ORPCthis, stringBinding):
+    def __init__(self, ORPCthis, stringBinding, portmap=None):
         self.__stringBindings = stringBinding
         self.__ORPCthis = ORPCthis
         self.__authType = RPC_C_AUTHN_WINNT
         self.__authLevel = RPC_C_AUTHN_LEVEL_PKT_PRIVACY
+        self.__connectionInfo = None
+        if portmap is not None:
+            self.set_connection_info(portmap)
     def get_ORPCthis(self):
         return self.__ORPCthis
     def get_string_bindings(self):
         return self.__stringBindings
+    def set_connection_info(self, portmap):
+        rpcTransport = portmap.get_rpc_transport()
+        kerberos = rpcTransport.get_kerberos()
+        remoteHost = None
+        remoteName = None
+        if kerberos:
+            remoteHost = rpcTransport.getRemoteHost()
+            remoteName = rpcTransport.getRemoteName()
+        self.__connectionInfo = (portmap.get_credentials(), kerberos, rpcTransport.get_kdcHost(), remoteHost, remoteName)
+    def get_connection_info(self):
+        return self.__connectionInfo
     def get_auth_level(self):
         if RPC_C_AUTHN_LEVEL_NONE < self.__authLevel < RPC_C_AUTHN_LEVEL_PKT_PRIVACY:
             if self.__authType == RPC_C_AUTHN_WINNT:
@@ -1131,7 +1195,7 @@ class INTERFACE:
             # We gotta check if we have a container inside our connection list, if not, create
             if (self.__target in INTERFACE.CONNECTIONS) is not True:
                 INTERFACE.CONNECTIONS[self.__target] = {}
-                INTERFACE.CONNECTIONS[self.__target][currentThread().getName()] = {}
+                INTERFACE.CONNECTIONS[self.__target][current_thread().name] = {}
 
             if objRef is not None:
                 self.process_interface(objRef)
@@ -1191,56 +1255,63 @@ class INTERFACE:
         return self.__ipidRemUnknown
 
     def get_dce_rpc(self):
-        return INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['dce']
+        return INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['dce']
 
     def get_cinstance(self):
         return self.__cinstance
 
     def set_cinstance(self, cinstance):
         self.__cinstance = cinstance
+    
+    def is_target_loopback(self):
+        try:
+            return ipaddress.ip_address(self.get_target()).is_loopback
+        except ValueError:
+            return False
 
-    def is_fdqn(self):
+    def is_fqdn(self):
         # I will assume the following
         # If I can't socket.inet_aton() then it's not an IPv4 address
         # Same for ipv6, but since socket.inet_pton is not available in Windows, I'll look for ':'. There can't be
         # an FQDN with ':'
-        # Is it isn't both, then it is a FDQN
+        # Is it isn't both, then it is a FQDN
         try:
-            socket.inet_aton(self.__target)
+            socket.inet_aton(self.get_target())
         except:
             # Not an IPv4
             try:
                 self.__target.index(':')
             except:
-                # Not an IPv6, it's a FDQN
+                # Not an IPv6, it's a FQDN
                 return True
         return False
 
-
     def connect(self, iid = None):
-        if (self.__target in INTERFACE.CONNECTIONS) is True:
-            if currentThread().getName() in INTERFACE.CONNECTIONS[self.__target] and \
-                            (self.__oxid in INTERFACE.CONNECTIONS[self.__target][currentThread().getName()]) is True:
-                dce = INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['dce']
-                currentBinding = INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['currentBinding']
+        if self.__target in INTERFACE.CONNECTIONS:
+            if current_thread().name in INTERFACE.CONNECTIONS[self.__target] and self.__oxid in INTERFACE.CONNECTIONS[self.__target][current_thread().name]:
+                dce = INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['dce']
+                currentBinding = INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['currentBinding']
                 if currentBinding == iid:
                     # We don't need to alter_ctx
                     pass
                 else:
                     newDce = dce.alter_ctx(iid)
-                    INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['dce'] = newDce
-                    INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['currentBinding'] = iid
+                    INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['dce'] = newDce
+                    INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['currentBinding'] = iid
             else:
+                # No existing connection, create a new one.
                 stringBindings = self.get_cinstance().get_string_bindings()
                 # No OXID present, we should create a new connection and store it
                 stringBinding = None
-                isTargetFDQN = self.is_fdqn()
-                LOG.debug('Target system is %s and isFDQN is %s' % (self.get_target(), isTargetFDQN))
+                isTargetFQDN = self.is_fqdn()
+                LOG.debug('Target system is %s and isFQDN is %s' % (self.get_target(), isTargetFQDN))
                 for strBinding in stringBindings:
                     # Here, depending on the get_target() value several things can happen
                     # 1) it's an IPv4 address
                     # 2) it's an IPv6 address
                     # 3) it's a NetBios Name
+                    # 4) it's 127.0.0.1 - not resolved via epmapper.
+                    #    if it really is a loopback address - return true on any stringbinding.
                     # we should handle all this cases accordingly
                     # Does this match exactly what get_target() returns?
                     LOG.debug('StringBinding: %s' % strBinding['aNetworkAddr'])
@@ -1253,11 +1324,19 @@ class INTERFACE:
                             binding = strBinding['aNetworkAddr']
                             bindingPort = ''
 
+                        if self.is_target_loopback():
+                            # The endpoint mapper does not advertise loopback addresses, but
+                            # this connection was explicitly requested for one. Reuse its port.
+                            LOG.debug('Detected loopback DCOM connection attempt, using first available StringBinding.')
+                            stringBinding = 'ncacn_ip_tcp:%s%s' % (self.get_target(), bindingPort)
+                            break
+                        
                         if binding.upper().find(self.get_target().upper()) >= 0:
                             stringBinding = 'ncacn_ip_tcp:' + strBinding['aNetworkAddr'][:-1]
                             break
+                        
                         # If get_target() is a FQDN, does it match the hostname?
-                        elif isTargetFDQN and binding.upper().find(self.get_target().upper().partition('.')[0]) >= 0:
+                        elif isTargetFQDN and binding.upper().find(self.get_target().upper().partition('.')[0]) >= 0:
                             # Here we replace the aNetworkAddr with self.get_target()
                             # This is to help resolving the target system name.
                             # self.get_target() has been resolved already otherwise we wouldn't be here whereas
@@ -1272,11 +1351,20 @@ class INTERFACE:
                     raise Exception('Can\'t find a valid stringBinding to connect')
 
                 dcomInterface = transport.DCERPCTransportFactory(stringBinding)
+
+                connectionInfo = self.__cinstance.get_connection_info()
+                if connectionInfo is None:
+                    self.__cinstance.set_connection_info(DCOMConnection.PORTMAPS[self.__target])
+                    connectionInfo = self.__cinstance.get_connection_info()
+                credentials, kerberos, kdcHost, remoteHost, remoteName = connectionInfo
+                if kerberos:
+                    dcomInterface.setRemoteHost(remoteHost)
+                    dcomInterface.setRemoteName(remoteName)
+
                 if hasattr(dcomInterface, 'set_credentials'):
                     # This method exists only for selected protocol sequences.
-                    dcomInterface.set_credentials(*DCOMConnection.PORTMAPS[self.__target].get_credentials())
-                    dcomInterface.set_kerberos(DCOMConnection.PORTMAPS[self.__target].get_rpc_transport().get_kerberos(),
-                                               DCOMConnection.PORTMAPS[self.__target].get_rpc_transport().get_kdcHost())
+                    dcomInterface.set_credentials(*credentials)
+                    dcomInterface.set_kerberos(kerberos, kdcHost)
                 dcomInterface.set_connect_timeout(300)
                 dce = dcomInterface.get_dce_rpc()
 
@@ -1298,10 +1386,10 @@ class INTERFACE:
                     #traceback.print_stack()
                     raise Exception("OXID NONE, something wrong!!!")
 
-                INTERFACE.CONNECTIONS[self.__target][currentThread().getName()] = {}
-                INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid] = {}
-                INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['dce'] = dce
-                INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['currentBinding'] = iid
+                INTERFACE.CONNECTIONS[self.__target][current_thread().name] = {}
+                INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid] = {}
+                INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['dce'] = dce
+                INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['currentBinding'] = iid
         else:
             # No connection created
             raise Exception('No connection created')
@@ -1324,7 +1412,7 @@ class INTERFACE:
         return resp
 
     def disconnect(self):
-        return INTERFACE.CONNECTIONS[self.__target][currentThread().getName()][self.__oxid]['dce'].disconnect()
+        return INTERFACE.CONNECTIONS[self.__target][current_thread().name][self.__oxid]['dce'].disconnect()
 
 
 # 3.1.1.5.6.1 IRemUnknown Methods
@@ -1568,9 +1656,9 @@ class IActivation:
                 secBinding = SECURITYBINDING(securityBindings)
                 securityBindings = securityBindings[len(secBinding):]
 
-        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings)
+        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings, self.__portmap)
         return IRemUnknown2(INTERFACE(classInstance, b''.join(resp['ppInterfaceData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteName()))
 
 
 # 3.1.2.5.2.2 IRemoteSCMActivator Methods
@@ -1732,11 +1820,11 @@ class IRemoteSCMActivator:
         size = propsOut.fromString(propOutput)
         propsOut.fromStringReferents(propOutput[size:])
 
-        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings)
+        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings, self.__portmap)
         classInstance.set_auth_level(scmr['remoteReply']['authnHint'])
         classInstance.set_auth_type(self.__portmap.get_auth_type())
         return IRemUnknown2(INTERFACE(classInstance, b''.join(propsOut['ppIntfData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteName()))
 
     def RemoteCreateInstance(self, clsId, iid):
         # Only supports one interface at a time
@@ -1896,8 +1984,8 @@ class IRemoteSCMActivator:
         size = propsOut.fromString(propOutput)
         propsOut.fromStringReferents(propOutput[size:])
 
-        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings)
+        classInstance = CLASS_INSTANCE(ORPCthis, stringBindings, self.__portmap)
         classInstance.set_auth_level(scmr['remoteReply']['authnHint'])
         classInstance.set_auth_type(self.__portmap.get_auth_type())
         return IRemUnknown2(INTERFACE(classInstance, b''.join(propsOut['ppIntfData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteName()))

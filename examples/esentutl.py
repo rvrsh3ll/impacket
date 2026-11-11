@@ -1,22 +1,24 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # Description:
-#             ESE utility. Allows dumping catalog, pages and tables.
+#   ESE utility. Allows dumping catalog, pages and tables.
 #
 # Author:
-#  Alberto Solino (@agsolino)
-#
+#   Alberto Solino (@agsolino)
 #
 # Reference for:
-#  Extensive Storage Engine (ese)
-# 
-from __future__ import division
-from __future__ import print_function
+#   Extensive Storage Engine (ese)
+#
+
 import sys
 import logging
 import argparse
@@ -56,13 +58,12 @@ def exportTable(ese, tableName):
 
 def main():
     print(version.BANNER)
-    # Init the example's logger theme
-    logger.init()
 
     parser = argparse.ArgumentParser(add_help = True, description = "Extensive Storage Engine utility. Allows dumping "
                                                                     "catalog, pages and tables.")
     parser.add_argument('databaseFile', action='store', help='ESE to open')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
     parser.add_argument('-page', action='store', help='page to open')
 
     subparsers = parser.add_subparsers(help='actions', dest='action')
@@ -83,13 +84,8 @@ def main():
         sys.exit(1)
 
     options = parser.parse_args()
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     ese = ESENT_DB(options.databaseFile)
 

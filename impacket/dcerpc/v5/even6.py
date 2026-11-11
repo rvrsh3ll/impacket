@@ -1,27 +1,33 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
-# Copyright (c) 2017 @MrAnde7son
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author: Itamar (@MrAnde7son)
+# Copyright (c) 2017 @MrAnde7son
 #
 # Description:
 #   Initial [MS-EVEN6] Interface implementation
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
+#   at https://github.com/fortra/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
 #   They are located at the end of this file.
 #   Helper functions start with "h"<name of the call>.
 #   There are test cases for them too.
 #
+# Author:
+#   Itamar (@MrAnde7son)
+#
 from impacket import system_errors
-from impacket.dcerpc.v5.dtypes import WSTR, DWORD, LPWSTR, ULONG, LARGE_INTEGER, WORD, BYTE
-from impacket.dcerpc.v5.ndr import NDRCALL, NDRPOINTER, NDRUniConformantArray, NDRUniVaryingArray, NDRSTRUCT
+from impacket.dcerpc.v5.dtypes import WSTR, DWORD, LPWSTR, ULONG, LARGE_INTEGER, WORD, BYTE, UUID
+from impacket.dcerpc.v5.ndr import NDRCALL, NDRPOINTER, NDRUniConformantArray, NDRUniVaryingArray, NDRSTRUCT, NULL
 from impacket.dcerpc.v5.rpcrt import DCERPCException
 from impacket.uuid import uuidtup_to_bin
 
@@ -40,36 +46,67 @@ class DCERPCSessionError(DCERPCException):
         else:
             return 'EVEN6 SessionError: unknown error code: 0x%x' % self.error_code
 
+def checkNullString(string):
+    if string == NULL:
+        return string
+
+    if string[-1:] != '\x00':
+        return string + '\x00'
+    else:
+        return string
+
 ################################################################################
 # CONSTANTS
 ################################################################################
 
+# Evt Subscribe Flags
+EvtSubscribeToFutureEvents = 0x00000001
+EvtSubscribeStartAtOldestRecord = 0x00000002
+EvtSubscribeStartAfterBookmark = 0x00000004
+
+EvtSubscribeTolerateQueryErrors = 0x00001000
+EvtSubscribeStrict = 0x00010000
+EvtSubscribePull = 0x10000000
+
 # Evt Path Flags
-EvtQueryChannelName = 0x00000001
-EvtQueryFilePath = 0x00000002
+EvtQueryChannelName   = 0x00000001
+EvtQueryFilePath      = 0x00000002
+
+# EvtRpcExportLog
+EvtQueryTolerateQueryErrors = 0x00001000
+
+# EvtRpcRegisterLogQuery
 EvtReadOldestToNewest = 0x00000100
 EvtReadNewestToOldest = 0x00000200
+
 
 ################################################################################
 # STRUCTURES
 ################################################################################
 
-class CONTEXT_HANDLE_LOG_HANDLE(NDRSTRUCT):
-    align = 1
+class handle_t(NDRSTRUCT):
     structure = (
-        ('Data', '20s=""'),
+         ('context_handle_attributes',ULONG),
+         ('context_handle_uuid',UUID),
     )
+
+    def __init__(self, data=None, isNDR64=False):
+        NDRSTRUCT.__init__(self, data, isNDR64)
+        self['context_handle_uuid'] = b'\x00'*16
+
+    def isNull(self):
+        return self['context_handle_uuid'] == b'\x00'*16
+
+CONTEXT_HANDLE_REMOTE_SUBSCRIPTION = handle_t
+
+CONTEXT_HANDLE_LOG_HANDLE = handle_t
 
 class PCONTEXT_HANDLE_LOG_HANDLE(NDRPOINTER):
     referent = (
         ('Data', CONTEXT_HANDLE_LOG_HANDLE),
     )
 
-class CONTEXT_HANDLE_LOG_QUERY(NDRSTRUCT):
-    align = 1
-    structure = (
-        ('Data', '20s=""'),
-    )
+CONTEXT_HANDLE_LOG_QUERY = handle_t
 
 class PCONTEXT_HANDLE_LOG_QUERY(NDRPOINTER):
     referent = (
@@ -81,11 +118,7 @@ class LPPCONTEXT_HANDLE_LOG_QUERY(NDRPOINTER):
         ('Data', PCONTEXT_HANDLE_LOG_QUERY),
     )
 
-class CONTEXT_HANDLE_OPERATION_CONTROL(NDRSTRUCT):
-    align = 1
-    structure = (
-        ('Data', '20s=""'),
-    )
+CONTEXT_HANDLE_OPERATION_CONTROL = handle_t
 
 class PCONTEXT_HANDLE_OPERATION_CONTROL(NDRPOINTER):
     referent = (
@@ -147,6 +180,27 @@ class LPBYTE_ARRAY(NDRPOINTER):
 class ULONG_ARRAY(NDRUniVaryingArray):
     item = ULONG
 
+# UniConformant Pointer Array for DWORDs
+class PCDWORD_ARRAY(NDRPOINTER):
+    referent = (
+        ('Data', CDWORD_ARRAY),
+    )
+
+class PDWORD_ARRAY(PCDWORD_ARRAY):
+    pass
+
+# UniConformant Pointer Array for BYTEs
+class BYTE_ARRAY_CONFORMANT(NDRUniConformantArray):
+    item = 'c'
+
+class PBYTE_ARRAY_CONFORMANT(NDRPOINTER):
+    referent = (
+        ('Data', BYTE_ARRAY_CONFORMANT),
+    )
+
+class PBYTE_ARRAY(PBYTE_ARRAY_CONFORMANT):
+    pass
+
 # 2.3.1 EVENT_DESCRIPTOR
 class EVENT_DESCRIPTOR(NDRSTRUCT):
     structure = (
@@ -189,6 +243,53 @@ class RESULT_SET(NDRSTRUCT):
 # RPC CALLS
 ################################################################################
 
+class EvtRpcRegisterRemoteSubscription(NDRCALL):
+    opnum = 0
+    structure = (
+        ('channelPath', LPWSTR),
+        ('query', WSTR),
+        ('bookmarkXml', LPWSTR),
+        ('Flags', DWORD),
+    )
+
+class EvtRpcRegisterRemoteSubscriptionResponse(NDRCALL):
+    structure = (
+        ('Handle', CONTEXT_HANDLE_REMOTE_SUBSCRIPTION),
+        ('OpControl', CONTEXT_HANDLE_OPERATION_CONTROL),
+        ('QueryChannelInfoSize', DWORD),
+        ('QueryChannelInfo', EvtRpcQueryChannelInfoArray),
+        ('Error', RPC_INFO),
+    )
+
+class EvtRpcRemoteSubscriptionNext(NDRCALL):
+    opnum = 2
+    structure = (
+        ('Handle', CONTEXT_HANDLE_REMOTE_SUBSCRIPTION),
+        ('NumRequestedRecords', DWORD),
+        ('TimeOut', DWORD),
+        ('Flags', DWORD),
+    )
+
+class EvtRpcRemoteSubscriptionNextResponse(NDRCALL):
+    structure = (
+        ('NumActualRecords', DWORD),
+        ('EventDataIndices', PDWORD_ARRAY),
+        ('EventDataSizes', PDWORD_ARRAY),
+        ('ResultBufferSize', DWORD),
+        ('ResultBuffer', PBYTE_ARRAY),
+        ('ErrorCode', ULONG),
+    )
+
+class EvtRpcRegisterControllableOperation(NDRCALL):
+    opnum = 4
+    structure = ()
+
+class EvtRpcRegisterControllableOperationResponse(NDRCALL):
+    structure = (
+        ('Handle', CONTEXT_HANDLE_OPERATION_CONTROL),
+        ('Error', DWORD),
+    )
+
 class EvtRpcRegisterLogQuery(NDRCALL):
     opnum = 5
     structure = (
@@ -204,7 +305,36 @@ class EvtRpcRegisterLogQueryResponse(NDRCALL):
         ('QueryChannelInfoSize', DWORD),
         ('QueryChannelInfo', EvtRpcQueryChannelInfoArray),
         ('Error', RPC_INFO),
-        )
+    )
+
+class EvtRpcClearLog(NDRCALL):
+    opnum = 6
+    structure = (
+        ('Handle', CONTEXT_HANDLE_OPERATION_CONTROL),
+        ('ChannelPath', WSTR),
+        ('BackupPath', WSTR),
+        ('Flags', DWORD),
+    )
+
+class EvtRpcClearLogResponse(NDRCALL):
+    structure = (
+        ('Error', RPC_INFO),
+    )
+
+class EvtRpcExportLog(NDRCALL):
+    opnum = 7
+    structure = (
+        ('Handle', CONTEXT_HANDLE_OPERATION_CONTROL),
+        ('ChannelPath', WSTR),
+        ('Query', WSTR),
+        ('BackupPath', WSTR),
+        ('Flags', DWORD),
+    )
+
+class EvtRpcExportLogResponse(NDRCALL):
+    structure = (
+        ('Error', RPC_INFO),
+    )
 
 class EvtRpcQueryNext(NDRCALL):
     opnum = 11
@@ -282,7 +412,12 @@ class EvtRpcGetChannelListResponse(NDRCALL):
 ################################################################################
 
 OPNUMS = {
+    0   : (EvtRpcRegisterRemoteSubscription, EvtRpcRegisterRemoteSubscriptionResponse),
+    2   : (EvtRpcRemoteSubscriptionNext, EvtRpcRemoteSubscriptionNextResponse),
+    4   : (EvtRpcRegisterControllableOperation, EvtRpcRegisterControllableOperationResponse),
     5   : (EvtRpcRegisterLogQuery, EvtRpcRegisterLogQueryResponse),
+    6   : (EvtRpcClearLog, EvtRpcClearLogResponse),
+    7   : (EvtRpcExportLog, EvtRpcExportLogResponse),
     11  : (EvtRpcQueryNext,  EvtRpcQueryNextResponse),
     12  : (EvtRpcQuerySeek, EvtRpcQuerySeekResponse),
     13  : (EvtRpcClose, EvtRpcCloseResponse),
@@ -294,12 +429,53 @@ OPNUMS = {
 # HELPER FUNCTIONS
 ################################################################################
 
+def hEvtRpcRegisterRemoteSubscription(dce, channelPath, query, bookmarkXml, flags):
+    request = EvtRpcRegisterRemoteSubscription()
+    request['channelPath'] = checkNullString(channelPath)
+    request['query'] = checkNullString(query)
+    request['bookmarkXml'] = checkNullString(bookmarkXml)
+    request['Flags'] = flags
+    resp = dce.request(request)
+    return resp
+
+def hEvtRpcRemoteSubscriptionNext(dce, handle, numRequestedRecords, timeOut=1000, flags=0):
+    request = EvtRpcRemoteSubscriptionNext()
+    request['Handle'] = handle
+    request['NumRequestedRecords'] = numRequestedRecords
+    request['TimeOut'] = timeOut
+    request['Flags'] = flags
+    resp = dce.request(request)
+    return resp
+
+def hEvtRpcRegisterControllableOperation(dce):
+    request = EvtRpcRegisterControllableOperation()
+    resp = dce.request(request)
+    return resp
+
 def hEvtRpcRegisterLogQuery(dce, path, flags, query='*\x00'):
     request = EvtRpcRegisterLogQuery()
-
-    request['Path'] = path
-    request['Query'] = query
+    request['Path'] = checkNullString(path)
+    request['Query'] = checkNullString(query)
     request['Flags'] = flags
+    resp = dce.request(request)
+    return resp
+
+def hEvtRpcClearLog(dce, handle, path, backupPath=NULL):
+    request = EvtRpcClearLog()
+    request['Handle'] = handle
+    request['ChannelPath'] = checkNullString(path)
+    request['BackupPath'] = checkNullString(backupPath)
+    request['Flags'] = 0
+    resp = dce.request(request)
+    return resp
+
+def hEvtRpcExportLog(dce, handle, channelPath, query, backupPath):
+    request = EvtRpcExportLog()
+    request['Handle'] = handle
+    request['ChannelPath'] = checkNullString(channelPath)
+    request['Query'] = checkNullString(query)
+    request['BackupPath'] = checkNullString(backupPath)
+    request['Flags'] = 0
     resp = dce.request(request)
     return resp
 
@@ -331,8 +507,7 @@ def hEvtRpcClose(dce, handle):
 
 def hEvtRpcOpenLogHandle(dce, channel, flags):
     request = EvtRpcOpenLogHandle()
-
-    request['Channel'] = channel
+    request['Channel'] = checkNullString(channel)
     request['Flags'] = flags
     return dce.request(request)
 

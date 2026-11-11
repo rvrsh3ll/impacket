@@ -1,11 +1,12 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Authors: Alberto Solino (@agsolino)
-#          Kacper Nowak (@kacpern)
 #
 # Description:
 #   RFC 4511 Minimalistic implementation. We don't need much functionality yet
@@ -14,16 +15,22 @@
 #   as we change them.
 #   Adding [MS-ADTS] specific functionality
 #
+# Authors:
+#   Alberto Solino (@agsolino)
+#   Kacper Nowak (@kacpern)
+#
 # ToDo:
-# [x] Implement Paging Search, especially important for big requests
+#   [x] Implement Paging Search, especially important for big requests
 #
 
-import os
 import re
+import struct
 import socket
 from binascii import unhexlify
 import random
+import six
 
+from cryptography.hazmat.primitives.serialization import pkcs12
 from pyasn1.codec.ber import encoder, decoder
 from pyasn1.error import SubstrateUnderrunError
 from pyasn1.type.univ import noValue
@@ -31,9 +38,9 @@ from pyasn1.type.univ import noValue
 from impacket import LOG
 from impacket.ldap.ldapasn1 import Filter, Control, SimplePagedResultsControl, ResultCode, Scope, DerefAliases, Operation, \
     KNOWN_CONTROLS, CONTROL_PAGEDRESULTS, NOTIFICATION_DISCONNECT, KNOWN_NOTIFICATIONS, BindRequest, SearchRequest, \
-    SearchResultDone, LDAPMessage
-from impacket.ntlm import getNTLMSSPType1, getNTLMSSPType3
-from impacket.spnego import SPNEGO_NegTokenInit, TypesMech
+    SearchResultDone, LDAPMessage, AddRequest, ModifyRequest, ModifyDNRequest, DelRequest, ExtendedRequest
+from impacket.ntlm import getNTLMSSPType1, getNTLMSSPType3, VERSION, hmac_md5, NTLMAuthChallenge
+from impacket.spnego import SPNEGO_NegTokenInit, SPNEGO_NegTokenResp, SPNEGOCipher, TypesMech
 
 try:
     import OpenSSL
@@ -46,6 +53,7 @@ __all__ = [
     'LDAPConnection', 'LDAPFilterSyntaxError', 'LDAPFilterInvalidException', 'LDAPSessionError', 'LDAPSearchError',
     'Control', 'SimplePagedResultsControl', 'ResultCode', 'Scope', 'DerefAliases', 'Operation',
     'CONTROL_PAGEDRESULTS', 'KNOWN_CONTROLS', 'NOTIFICATION_DISCONNECT', 'KNOWN_NOTIFICATIONS',
+    'escape_filter_chars', 'get_entry_dn', 'get_entry_values', 'get_entry_value', 'load_pkcs12',
 ]
 
 # https://tools.ietf.org/search/rfc4515#section-3
@@ -62,15 +70,87 @@ RE_ATTRIBUTE = re.compile(r'^%s$' % ATTRIBUTE, re.I)
 RE_EX_ATTRIBUTE_1 = re.compile(r'^%s%s?%s?$' % (ATTRIBUTE, DN, MATCHING_RULE), re.I)
 RE_EX_ATTRIBUTE_2 = re.compile(r'^(){0}%s?%s$' % (DN, MATCHING_RULE), re.I)
 
+# LDAP modify operations
+MODIFY_ADD = 0
+MODIFY_DELETE = 1
+MODIFY_REPLACE = 2
+MODIFY_INCREMENT = 3
+
+
+def escape_filter_chars(value):
+    """Escape special characters in an LDAP filter value per RFC 4515."""
+    escaped = value.replace('\\', '\\5c')
+    escaped = escaped.replace('*', '\\2a')
+    escaped = escaped.replace('(', '\\28')
+    escaped = escaped.replace(')', '\\29')
+    escaped = escaped.replace('\x00', '\\00')
+    return escaped
+
+
+def get_entry_dn(entry):
+    """Return the DN of a SearchResultEntry."""
+    return str(entry['objectName'])
+
+
+def get_entry_values(entry, attribute_name):
+    """Return the list of raw values for the named attribute in a SearchResultEntry."""
+    for attribute in entry['attributes']:
+        if str(attribute['type']).lower() == attribute_name.lower():
+            return list(attribute['vals'])
+    return []
+
+
+def get_entry_value(entry, attribute_name):
+    """Return the first value for the named attribute, or None."""
+    values = get_entry_values(entry, attribute_name)
+    return values[0] if values else None
+
+
+def certificate_file_type(path):
+    try:
+        with open(path, 'rb') as fd:
+            header = fd.read(10)
+    except OSError as e:
+        raise LDAPSessionError(errorString="Could not read '%s': %s" % (path, e))
+
+    return crypto.FILETYPE_PEM if header.startswith(b'-----BEGIN') else crypto.FILETYPE_ASN1
+
+
+def load_pkcs12(pfxfile, password=None):
+    """Return the (certificate, private key) pair held in a PKCS#12 file, as pyOpenSSL objects."""
+    if isinstance(password, str):
+        password = password.encode('utf-8')
+    if not password:
+        password = None   # cryptography expects None, not an empty password, for an unencrypted bundle
+
+    try:
+        with open(pfxfile, 'rb') as fd:
+            privateKey, certificate, _ = pkcs12.load_key_and_certificates(fd.read(), password)
+    except OSError as e:
+        raise LDAPSessionError(errorString="Could not read the PKCS#12 file '%s': %s" % (pfxfile, e))
+    except ValueError as e:
+        raise LDAPSessionError(errorString="Could not parse the PKCS#12 file '%s' (wrong password?): %s" % (pfxfile, e))
+
+    if certificate is None or privateKey is None:
+        raise LDAPSessionError(errorString="PKCS#12 file '%s' does not hold both a certificate and a private key" % pfxfile)
+
+    return crypto.X509.from_cryptography(certificate), crypto.PKey.from_cryptography_key(privateKey)
+
 
 class LDAPConnection:
-    def __init__(self, url, baseDN='', dstIp=None):
+    def __init__(self, url, baseDN='', dstIp=None, signing=True, timeout=None, *, certfile=None, keyfile=None,
+                 pfxfile=None, pfxpass=None):
         """
         LDAPConnection class
 
         :param string url:
         :param string baseDN:
         :param string dstIp:
+        :param timeout: connection timeout in seconds (None = blocking)
+        :param string certfile: PEM or DER client certificate file used for Schannel authentication over TLS
+        :param string keyfile: PEM or DER private key file matching certfile
+        :param string pfxfile: PKCS#12 file holding both the client certificate and its private key
+        :param pfxpass: password protecting pfxfile, None when it is not encrypted
 
         :return: a LDAP instance, if not raises a LDAPSessionError exception
         """
@@ -80,6 +160,7 @@ class LDAPConnection:
         self._socket = None
         self._baseDN = baseDN
         self._dstIp = dstIp
+        self.__signing = signing
 
         if url.startswith('ldap://'):
             self._dstPort = 389
@@ -88,13 +169,37 @@ class LDAPConnection:
         elif url.startswith('ldaps://'):
             self._dstPort = 636
             self._SSL = True
+            self.__signing = False
             self._dstHost = url[8:]
         elif url.startswith('gc://'):
             self._dstPort = 3268
             self._SSL = False
+            self.__signing = False
             self._dstHost = url[5:]
         else:
             raise LDAPSessionError(errorString="Unknown URL prefix: '%s'" % url)
+
+        self.__binded = False
+        self.channel_binding_value = None
+        self._channel_binding_error = None
+
+        # Schannel client certificate, presented during the TLS handshake (LDAPS or StartTLS)
+        self._certfile = certfile
+        self._keyfile = keyfile
+        self._pfxfile = pfxfile
+        self._pfxpass = pfxpass
+        self._client_cert_loaded = False
+
+        ### SASL Auth LDAP Signing arguments
+        self.sequenceNumber = 0
+        
+        # Kerberos
+        self.__auth_type = None
+        self.__gss = None
+        self.__sessionKey = None
+
+        # NTLM
+        self.__spnego_cipher_blob = None
 
         # Try to connect
         if self._dstIp is not None:
@@ -102,22 +207,163 @@ class LDAPConnection:
         else:
             targetHost = self._dstHost
 
-        LOG.debug('Connecting to %s, port %d, SSL %s' % (targetHost, self._dstPort, self._SSL))
+        LOG.debug('Connecting to %s, port %d, SSL %s, signing %s' % (targetHost, self._dstPort, self._SSL, self.__signing))
         try:
             af, socktype, proto, _, sa = socket.getaddrinfo(targetHost, self._dstPort, 0, socket.SOCK_STREAM)[0]
             self._socket = socket.socket(af, socktype, proto)
         except socket.error as e:
-            raise socket.error('Connection error (%s:%d)' % (targetHost, 88), e)
+            raise socket.error('Connection error (%s:%d)' % (targetHost, self._dstPort), e)
 
+        self._socket.settimeout(timeout)
         if self._SSL is False:
             self._socket.connect(sa)
         else:
             # Switching to TLS now
-            ctx = SSL.Context(SSL.TLSv1_METHOD)
-            # ctx.set_cipher_list('RC4')
+            ctx = self.build_tls_context()
             self._socket = SSL.Connection(ctx, self._socket)
             self._socket.connect(sa)
+            self._socket.settimeout(None)   # do_handshake() on a non-blocking (timeout-mode) socket raises WantReadError
             self._socket.do_handshake()
+            self.compute_channel_binding()
+
+        self._socket.settimeout(None)
+
+    def _get_channel_binding_value(self):
+        if not self._SSL:
+            return b''
+
+        if self._channel_binding_error is not None:
+            raise LDAPSessionError(errorString=self._channel_binding_error)
+
+        return self.channel_binding_value or b''
+
+    def build_tls_context(self):
+        ctx = SSL.Context(SSL.TLS_METHOD)
+        ctx.set_cipher_list('ALL:@SECLEVEL=0'.encode('utf-8'))
+        SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION = 0x00040000
+        ctx.set_options(SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION)
+        self.load_client_certificate(ctx)
+        return ctx
+
+    def load_client_certificate(self, ctx):
+        """Load the Schannel client certificate into ctx, from a PKCS#12 file or a certificate/key file pair."""
+        self._client_cert_loaded = False
+        if self._pfxfile is None and self._certfile is None and self._keyfile is None:
+            return
+
+        if self._pfxfile is not None:
+            certificate, privateKey = load_pkcs12(self._pfxfile, self._pfxpass)
+            try:
+                ctx.use_certificate(certificate)
+                ctx.use_privatekey(privateKey)
+            except (SSL.Error, crypto.Error) as e:
+                raise LDAPSessionError(errorString="Could not use the client certificate from '%s': %s" % (self._pfxfile, e))
+        elif self._certfile is None or self._keyfile is None:
+            raise LDAPSessionError(errorString='Both certfile and keyfile are required, use pfxfile for a PKCS#12 bundle')
+        else:
+            try:
+                ctx.use_certificate_file(self._certfile, certificate_file_type(self._certfile))
+                ctx.use_privatekey_file(self._keyfile, certificate_file_type(self._keyfile))
+            except (SSL.Error, OSError) as e:
+                raise LDAPSessionError(errorString="Could not load the client certificate '%s' and key '%s': %s" %
+                                                   (self._certfile, self._keyfile, e))
+
+        try:
+            ctx.check_privatekey()
+        except SSL.Error as e:
+            raise LDAPSessionError(errorString='Client certificate and private key do not match: %s' % e)
+
+        self._client_cert_loaded = True
+
+    def compute_channel_binding(self):
+        """Compute the LDAP channel binding token from the negotiated TLS server certificate."""
+        self._channel_binding_error = None
+        # From https://github.com/ThePirateWhoSmellsOfSunflowers/ldap3/blob/0181dbec0c0671237f96d9acf4a71044001acaf2/ldap3/core/connection.py#L1414
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import hashes
+        from hashlib import md5
+
+        # RFC 5929 section 4.1 hashes list
+        rfc5929_hashes_list = (hashes.MD5, hashes.SHA1)
+
+        der_cert = crypto.dump_certificate(crypto.FILETYPE_ASN1, self._socket.get_peer_certificate())
+        peer_certificate = x509.load_der_x509_certificate(der_cert, default_backend())
+        peer_certificate_hash_algorithm = peer_certificate.signature_hash_algorithm
+
+        # RFC 5929 section 4.1 leaves tls-server-end-point undefined when
+        # the certificate signature does not use a separate hash function.
+        if peer_certificate_hash_algorithm is None:
+            self._channel_binding_error = (
+                'Cannot compute tls-server-end-point channel binding: '
+                'the certificate signature algorithm does not use a separate hash function'
+            )
+            LOG.debug(self._channel_binding_error)
+        else:
+            # RFC 5929 section 4.1 hash function selection
+            if isinstance(peer_certificate_hash_algorithm, rfc5929_hashes_list):
+                digest = hashes.Hash(hashes.SHA256(), default_backend())
+            else:
+                digest = hashes.Hash(peer_certificate_hash_algorithm, default_backend())
+            digest.update(der_cert)
+            peer_cert_digest_bytes = digest.finalize()
+
+            channel_binding_struct = b''
+            initiator_address = b'\x00'*8
+            acceptor_address = b'\x00'*8
+
+            # https://datatracker.ietf.org/doc/html/rfc5929#section-4
+            application_data_raw = b'tls-server-end-point:' + peer_cert_digest_bytes
+            len_application_data = len(application_data_raw).to_bytes(4, byteorder='little', signed = False)
+            application_data = len_application_data
+            application_data += application_data_raw
+            channel_binding_struct += initiator_address
+            channel_binding_struct += acceptor_address
+            channel_binding_struct += application_data
+            self.channel_binding_value = md5(channel_binding_struct).digest()
+
+    def startTLS(self):
+        """Upgrade a plaintext LDAP connection (ldap://) to TLS using the StartTLS extended operation."""
+        if self._SSL:
+            return
+
+        request = ExtendedRequest()
+        request['requestName'] = '1.3.6.1.4.1.1466.20037'  # StartTLS OID
+        response = self.sendReceive(request)[0]['protocolOp']
+        if response['extendedResp']['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                errorString='Error in StartTLS request -> %s: %s' % (response['extendedResp']['resultCode'].prettyPrint(),
+                                                                     response['extendedResp']['diagnosticMessage'])
+            )
+
+        ctx = self.build_tls_context()
+        self._socket = SSL.Connection(ctx, self._socket)
+        self._socket.set_connect_state()
+        self._socket.do_handshake()
+        self._SSL = True
+        self.compute_channel_binding()
+
+    def whoami(self):
+        """Return the identity the server bound this connection to, empty when the connection is anonymous."""
+        request = ExtendedRequest()
+        request['requestName'] = '1.3.6.1.4.1.4203.1.11.3'  # RFC 4532 "Whoami?" OID
+        response = self.sendReceive(request)[0]['protocolOp']['extendedResp']
+        if response['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                errorString='Error in whoami request -> %s: %s' % (response['resultCode'].prettyPrint(),
+                                                                   response['diagnosticMessage'])
+            )
+
+        identity = response['responseValue']
+        return bytes(identity).decode('utf-8') if identity.hasValue() else ''
+
+    def check_certificate_mapping(self):
+        """Fail when the server did not map the client certificate presented during the handshake to an account."""
+        identity = self.whoami()
+        if not identity:
+            raise LDAPSessionError(errorString='The server did not map the client certificate to an account, '
+                                               'the connection is anonymous')
+        LOG.debug('Client certificate mapped to %s' % identity)
 
     def kerberosLogin(self, user, password, domain='', lmhash='', nthash='', aesKey='', kdcHost=None, TGT=None,
                       TGS=None, useCache=True):
@@ -151,8 +397,9 @@ class LDAPConnection:
 
         # Importing down here so pyasn1 is not required if kerberos is not used.
         from impacket.krb5.ccache import CCache
+        from impacket.krb5.gssapi import GSSAPI, GSS_C_CONF_FLAG, GSS_C_INTEG_FLAG, GSS_C_SEQUENCE_FLAG, GSS_C_REPLAY_FLAG
         from impacket.krb5.asn1 import AP_REQ, Authenticator, TGS_REP, seq_set
-        from impacket.krb5.kerberosv5 import getKerberosTGT, getKerberosTGS
+        from impacket.krb5.kerberosv5 import getKerberosTGT, getKerberosTGS, CheckSumField
         from impacket.krb5 import constants
         from impacket.krb5.types import Principal, KerberosTime, Ticket
         import datetime
@@ -160,41 +407,9 @@ class LDAPConnection:
         if TGT is not None or TGS is not None:
             useCache = False
 
+        targetName = 'ldap/%s' % self._dstHost
         if useCache:
-            try:
-                ccache = CCache.loadFile(os.getenv('KRB5CCNAME'))
-            except:
-                # No cache present
-                pass
-            else:
-                # retrieve domain information from CCache file if needed
-                if domain == '':
-                    domain = ccache.principal.realm['data'].decode('utf-8')
-                    LOG.debug('Domain retrieved from CCache: %s' % domain)
-
-                LOG.debug('Using Kerberos Cache: %s' % os.getenv('KRB5CCNAME'))
-                principal = 'ldap/%s@%s' % (self._dstHost.upper(), domain.upper())
-                creds = ccache.getCredential(principal)
-                if creds is None:
-                    # Let's try for the TGT and go from there
-                    principal = 'krbtgt/%s@%s' % (domain.upper(), domain.upper())
-                    creds = ccache.getCredential(principal)
-                    if creds is not None:
-                        TGT = creds.toTGT()
-                        LOG.debug('Using TGT from cache')
-                    else:
-                        LOG.debug('No valid credentials found in cache')
-                else:
-                    TGS = creds.toTGS(principal)
-                    LOG.debug('Using TGS from cache')
-
-                # retrieve user information from CCache file if needed
-                if user == '' and creds is not None:
-                    user = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
-                    LOG.debug('Username retrieved from CCache: %s' % user)
-                elif user == '' and len(ccache.principal.components) > 0:
-                    user = ccache.principal.components[0]['data'].decode('utf-8')
-                    LOG.debug('Username retrieved from CCache: %s' % user)
+            domain, user, TGT, TGS = CCache.parseFile(domain, user, targetName)
 
         # First of all, we need to get a TGT for the user
         userName = Principal(user, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
@@ -208,7 +423,7 @@ class LDAPConnection:
             sessionKey = TGT['sessionKey']
 
         if TGS is None:
-            serverName = Principal('ldap/%s' % self._dstHost, type=constants.PrincipalNameType.NT_SRV_INST.value)
+            serverName = Principal(targetName, type=constants.PrincipalNameType.NT_SRV_INST.value)
             tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(serverName, domain, kdcHost, tgt, cipher,
                                                                     sessionKey)
         else:
@@ -241,11 +456,28 @@ class LDAPConnection:
         authenticator['authenticator-vno'] = 5
         authenticator['crealm'] = domain
         seq_set(authenticator, 'cname', userName.components_to_asn1)
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         authenticator['cusec'] = now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
+        
+        authenticator['cksum'] = noValue
+        authenticator['cksum']['cksumtype'] = 0x8003
 
+        chkField = CheckSumField()
+        chkField['Lgth'] = 16
+
+        chkField['Flags'] = GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG
+
+        # If TLS is used, setup channel binding
+        
+        if self._SSL:
+            chkField['Bnd'] = self._get_channel_binding_value()
+        if self.__signing:
+            chkField['Flags'] |= GSS_C_CONF_FLAG
+            chkField['Flags'] |= GSS_C_INTEG_FLAG
+        authenticator['cksum']['checksum'] = chkField.getData()
+        authenticator['seq-number'] = 0
         encodedAuthenticator = encoder.encode(authenticator)
 
         # Key Usage 11
@@ -257,28 +489,33 @@ class LDAPConnection:
         apReq['authenticator'] = noValue
         apReq['authenticator']['etype'] = cipher.enctype
         apReq['authenticator']['cipher'] = encryptedEncodedAuthenticator
-
         blob['MechToken'] = encoder.encode(apReq)
-
+        
         # Done with the Kerberos saga, now let's get into LDAP
 
         bindRequest = BindRequest()
         bindRequest['version'] = 3
-        bindRequest['name'] = user
+        bindRequest['name'] = 'user'
         bindRequest['authentication']['sasl']['mechanism'] = 'GSS-SPNEGO'
         bindRequest['authentication']['sasl']['credentials'] = blob.getData()
-
+        
         response = self.sendReceive(bindRequest)[0]['protocolOp']
-
         if response['bindResponse']['resultCode'] != ResultCode('success'):
             raise LDAPSessionError(
                 errorString='Error in bindRequest -> %s: %s' % (response['bindResponse']['resultCode'].prettyPrint(),
                                                                 response['bindResponse']['diagnosticMessage'])
             )
+        
+        self.__auth_type = "KRB5"
+        self.__binded = True
+
+        if self.__signing:
+            self.__sessionKey = sessionKey
+            self.__gss = GSSAPI(cipher)
 
         return True
 
-    def login(self, user='', password='', domain='', lmhash='', nthash='', authenticationChoice='sicilyNegotiate'):
+    def login(self, user='', password='', domain='', lmhash='', nthash='', authenticationChoice='sasl'):
         """
         logins into the target system
 
@@ -287,7 +524,8 @@ class LDAPConnection:
         :param string domain: domain where the account is valid for
         :param string lmhash: LMHASH used to authenticate using hashes (password is not used)
         :param string nthash: NTHASH used to authenticate using hashes (password is not used)
-        :param string authenticationChoice: type of authentication protocol to use (default NTLM)
+        :param string authenticationChoice: type of authentication protocol to use (default NTLM), 'external' binds
+               with the TLS client certificate given to LDAPConnection (Schannel)
 
         :return: True, raises a LDAPSessionError if error.
         """
@@ -326,14 +564,108 @@ class LDAPConnection:
             negotiate = getNTLMSSPType1('', domain)
             bindRequest['authentication']['sicilyNegotiate'] = negotiate.getData()
             response = self.sendReceive(bindRequest)[0]['protocolOp']
+            if response['bindResponse']['resultCode'] != ResultCode('success'):
+                raise LDAPSessionError(
+                    errorString='Error in bindRequest during the NTLMAuthNegotiate request -> %s: %s' %
+                                (response['bindResponse']['resultCode'].prettyPrint(),
+                                 response['bindResponse']['diagnosticMessage'])
+                )
 
             # NTLM Challenge
             type2 = response['bindResponse']['matchedDN']
 
+            # If TLS is used, setup channel binding
+            channel_binding_value = self._get_channel_binding_value()
+
             # NTLM Auth
-            type3, exportedSessionKey = getNTLMSSPType3(negotiate, bytes(type2), user, password, domain, lmhash, nthash)
+            type3, exportedSessionKey = getNTLMSSPType3(negotiate, bytes(type2), user, password, domain, lmhash, nthash, channel_binding_value=channel_binding_value)
             bindRequest['authentication']['sicilyResponse'] = type3.getData()
             response = self.sendReceive(bindRequest)[0]['protocolOp']
+        elif authenticationChoice == 'sasl':
+            if lmhash != '' or nthash != '':
+                if len(lmhash) % 2:
+                    lmhash = '0' + lmhash
+                if len(nthash) % 2:
+                    nthash = '0' + nthash
+                try:
+                    lmhash = unhexlify(lmhash)
+                    nthash = unhexlify(nthash)
+                except TypeError:
+                    pass
+
+            bindRequest['name'] = ''
+            self.version = VERSION()
+            self.version['ProductMajorVersion'], self.version['ProductMinorVersion'], self.version['ProductBuild'] = 10, 0, 19041
+            # NTLM Negotiate
+            negotiate = getNTLMSSPType1('', domain, signingRequired=self.__signing, use_ntlmv2=True, version=self.version)
+
+            blob = SPNEGO_NegTokenInit()
+            blob['MechTypes'] = [TypesMech['NTLMSSP - Microsoft NTLM Security Support Provider']]
+            blob['MechToken'] = negotiate.getData()
+
+            bindRequest['authentication']['sasl']['mechanism'] = 'GSS-SPNEGO'
+            bindRequest['authentication']['sasl']['credentials'] = blob.getData()
+            response = self.sendReceive(bindRequest)[0]['protocolOp']
+            if response['bindResponse']['resultCode'] != ResultCode('saslBindInProgress'):
+                raise LDAPSessionError(
+                    errorString='Error in bindRequest during the NTLMAuthNegotiate request -> %s: %s' %
+                                (response['bindResponse']['resultCode'].prettyPrint(),
+                                 response['bindResponse']['diagnosticMessage'])
+                )
+
+            # NTLM Challenge
+            serverSaslCreds = response['bindResponse']['serverSaslCreds']
+            spnegoTokenResp = SPNEGO_NegTokenResp(serverSaslCreds.asOctets())
+            if spnegoTokenResp.isNegoExSelected():
+                raise LDAPSessionError(errorString='NEGOEX / PKU2U authentication is not implemented yet')
+                #should this be a LDAPSessionError or an NotImplementedError?
+            type2 = spnegoTokenResp['ResponseToken']
+            
+            # channel binding
+            channel_binding_value = self._get_channel_binding_value()
+            
+            # NTLM Auth
+            type3, exportedSessionKey = getNTLMSSPType3(negotiate, type2, user, password, domain, lmhash, nthash, service='ldap', version=self.version, use_ntlmv2=True, channel_binding_value=channel_binding_value)
+            
+            # calculate MIC
+            newmic = hmac_md5(exportedSessionKey, negotiate.getData() + NTLMAuthChallenge(type2).getData() + type3.getData())
+            type3['MIC'] = newmic
+
+            blob = SPNEGO_NegTokenResp()
+            blob['ResponseToken'] = type3.getData()
+            if self.__signing:
+                self.__spnego_cipher_blob = SPNEGOCipher(flags=negotiate['flags'], randomSessionKey=exportedSessionKey)
+                blob['mechListMIC'] = self.__spnego_cipher_blob.sign(b'0\x0c\x06\n+\x06\x01\x04\x01\x827\x02\x02\n', 0, reset_cipher=True).getData()
+            bindRequest['authentication']['sasl']['mechanism'] = 'GSS-SPNEGO'
+            bindRequest['authentication']['sasl']['credentials'] = blob.getData()
+            response = self.sendReceive(bindRequest)[0]['protocolOp']
+        elif authenticationChoice == 'external':
+            self.__signing = False
+            # The client certificate is only presented once the socket is wrapped in TLS
+            handshake_bound = self._SSL
+            if not handshake_bound:
+                self.startTLS()
+
+            if not self._client_cert_loaded:
+                raise LDAPSessionError(errorString='SASL EXTERNAL requires a client certificate: pass pfxfile, '
+                                                   'or both certfile and keyfile, to LDAPConnection')
+
+            # Active Directory answers authMethodNotSupported to an EXTERNAL bind over LDAPS, the handshake bound it
+            if handshake_bound:
+                self.check_certificate_mapping()
+            else:
+                bindRequest['name'] = ''
+                bindRequest['authentication']['sasl']['mechanism'] = 'EXTERNAL'
+                response = self.sendReceive(bindRequest)[0]['protocolOp']
+                if response['bindResponse']['resultCode'] != ResultCode('success'):
+                    raise LDAPSessionError(
+                        errorString='Error in bindRequest -> %s: %s' % (response['bindResponse']['resultCode'].prettyPrint(),
+                                                                        response['bindResponse']['diagnosticMessage'])
+                    )
+
+            self.__auth_type = authenticationChoice
+            self.__binded = True
+            return True
         else:
             raise LDAPSessionError(errorString="Unknown authenticationChoice: '%s'" % authenticationChoice)
 
@@ -342,11 +674,42 @@ class LDAPConnection:
                 errorString='Error in bindRequest -> %s: %s' % (response['bindResponse']['resultCode'].prettyPrint(),
                                                                 response['bindResponse']['diagnosticMessage'])
             )
-
+        
+        self.__auth_type = f"NTLM-{authenticationChoice}"
+        self.__binded = True
         return True
 
+    def encrypt(self, data):
+        if self.__auth_type == "KRB5":
+            data, signature = self.__gss.GSS_Wrap_LDAP(self.__sessionKey, data, self.sequenceNumber)
+            data = signature + data
+            data = len(data).to_bytes(4, byteorder = 'big', signed = False) + data
+        elif self.__auth_type == "NTLM-sasl":
+            signature, data = self.__spnego_cipher_blob.encrypt(data)
+            data = signature.getData() + data
+            data = len(data).to_bytes(4, byteorder = 'big', signed = False) + data
+        else:
+            raise(f"Encryption not implemented for {self.__auth_type} protocol")
+        return data
+
+    def decrypt(self, data):
+        if self.__auth_type == "KRB5":
+            data = data[4:]
+            data, _ = self.__gss.GSS_Unwrap_LDAP(self.__sessionKey, data, 0, direction='init')
+        elif self.__auth_type == "NTLM-sasl":
+            data= data[4:]
+            signature, data = self.__spnego_cipher_blob.decrypt(data)
+        else:
+            raise(f"Decryption not implemented for {self.__auth_type} protocol")
+        return data
+
+    #  searchFilter expects a string (not bytes), otherwise it will raise an exception
     def search(self, searchBase=None, scope=None, derefAliases=None, sizeLimit=0, timeLimit=0, typesOnly=False,
                searchFilter='(objectClass=*)', attributes=None, searchControls=None, perRecordCallback=None):
+
+        if not isinstance(searchFilter, six.text_type):
+            raise LDAPFilterInvalidException("searchFilter must be %s, got %s" % (six.text_type, type(searchFilter)))
+
         if searchBase is None:
             searchBase = self._baseDN
         if scope is None:
@@ -411,6 +774,126 @@ class LDAPConnection:
                             pass
         return done
 
+    def add(self, dn, objectClass, attributes=None, controls=None):
+        """
+        Add an entry to the LDAP directory.
+
+        :param dn: Distinguished Name of the entry to add
+        :param objectClass: Tuple or list of object classes for the entry
+        :param attributes: Dictionary of attributes for the entry
+        :param controls: LDAP controls to include in the request
+        :return: True if the entry was added successfully, else raises LDAPSessionError
+        """
+        addRequest = AddRequest()
+        addRequest['entry'] = dn
+        addRequest['attributes'][0]['type'] = 'objectClass'
+        addRequest['attributes'][0]['vals'].setComponents(*objectClass)
+
+        index = 1
+        for key, value in attributes.items():
+            addRequest['attributes'][index]['type'] = key
+            if isinstance(value, list):
+                addRequest['attributes'][index]['vals'].setComponents(*(str(val) if isinstance(val, int) else val for val in value))
+            else:
+                addRequest['attributes'][index]['vals'].setComponents(str(value) if isinstance(value, int) else value)
+            index += 1
+
+        response = self.sendReceive(addRequest, controls)[0]['protocolOp']
+        if response['addResponse']['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                error=int(response['addResponse']['resultCode']),
+                errorString=f"Error in addRequest -> {response['addResponse']['resultCode'].prettyPrint()}: {response['addResponse']['diagnosticMessage']}"
+            )
+        return True
+
+    def modify(self, dn, modifications, controls=None):
+        """
+        Modify an entry in the LDAP directory.
+        RFC 4511 Section 4.6
+
+        :param dn: Distinguished Name of the entry to modify
+        :param modifications: Dictionary of modifications of form {attribute: [(operation, values), ...]}.
+                Operation: 0 - add, 1 - delete, 2 - replace, 3 - increment.
+                Values: single value or list of values.
+        :param controls: LDAP controls to include in the request
+        :return: True if the entry was modified successfully, else raises LDAPSessionError
+        """
+        modifyRequest = ModifyRequest()
+        modifyRequest['object'] = dn
+
+        # idx keeps track of the current change index
+        idx = 0
+        for attr, ops in modifications.items():
+            for op in ops:
+                # op should be a tuple (operation, values)
+                if op[0] not in [MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, MODIFY_INCREMENT]:
+                    raise LDAPSessionError(errorString=f"Invalid modification operation '{op[0]}' for attribute '{attr}'")
+                modifyRequest['changes'][idx]['operation'] = op[0]  # operation code
+                modifyRequest['changes'][idx]['modification']['type'] = attr
+
+                # prepare changed values. Integer values need to be converted to string
+                vals = []
+                if isinstance(op[1], list):
+                    vals.extend([str(val) if isinstance(val, int) else val for val in op[1]])
+                else:
+                    vals.append(str(op[1]) if isinstance(op[1], int) else op[1])
+                modifyRequest['changes'][idx]['modification']['vals'].setComponents(*vals)
+                idx += 1
+
+        response = self.sendReceive(modifyRequest, controls)[0]['protocolOp']
+        if response['modifyResponse']['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                error=int(response['modifyResponse']['resultCode']),
+                errorString=f"Error in modifyRequest -> {response['modifyResponse']['resultCode'].prettyPrint()}: {response['modifyResponse']['diagnosticMessage']}"
+            )
+        return True
+
+    def modify_dn(self, dn, newrdn, deleteoldrdn=True, newSuperior=None, controls=None):
+        """
+        Modify the Distinguished Name of an entry in the LDAP directory.
+        RFC 4511 Section 4.9
+
+        :param dn: Current Distinguished Name of the entry
+        :param newrdn: New Relative Distinguished Name for the entry
+        :param deleteoldrdn: Whether to delete the old RDN from the entry
+        :param newSuperior: New superior DN if moving the entry to a different container
+        :param controls: LDAP controls to include in the request
+        :return: True if the DN was modified successfully, else raises LDAPSessionError
+        """
+        modifyDNRequest = ModifyDNRequest()
+        modifyDNRequest['entry'] = dn
+        modifyDNRequest['newrdn'] = newrdn
+        modifyDNRequest['deleteoldrdn'] = deleteoldrdn
+        if newSuperior is not None:
+            modifyDNRequest['newSuperior'] = newSuperior
+
+        response = self.sendReceive(modifyDNRequest, controls)[0]['protocolOp']
+        if response['modDNResponse']['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                error=int(response['modDNResponse']['resultCode']),
+                errorString=f"Error in modifyDNRequest -> {response['modDNResponse']['resultCode'].prettyPrint()}: {response['modDNResponse']['diagnosticMessage']}"
+            )
+        return True
+
+    def delete(self, dn, controls=None):
+        """
+        Delete an entry from the LDAP directory.
+        RFC 4511 Section 4.8
+
+        :param dn: Distinguished Name of the entry to delete
+        :param controls: LDAP controls to include in the request
+        :return: True if the entry was deleted successfully, else raises LDAPSessionError
+        """
+        deleteRequest = DelRequest(dn)
+
+        response = self.sendReceive(deleteRequest, controls)[0]['protocolOp']
+        if response['delResponse']['resultCode'] != ResultCode('success'):
+            raise LDAPSessionError(
+                error=int(response['delResponse']['resultCode']),
+                errorString=f"Error in deleteRequest -> {response['delResponse']['resultCode'].prettyPrint()}: {response['delResponse']['diagnosticMessage']}"
+            )
+        return True
+
     def close(self):
         if self._socket is not None:
             self._socket.close()
@@ -424,9 +907,12 @@ class LDAPConnection:
 
         data = encoder.encode(message)
 
+        if self.__binded and self.__signing:
+            data = self.encrypt(data)
+            self.sequenceNumber += 1
         return self._socket.sendall(data)
 
-    def recv(self):
+    def recv_raw(self):
         REQUEST_SIZE = 8192
         data = b''
         done = False
@@ -436,13 +922,31 @@ class LDAPConnection:
                 done = True
             data += recvData
 
+        if self.__binded and self.__signing: # we need to decrypt every TCP frames, all at once
+            message_length = struct.unpack('!I', data[:4])[0]
+
+            while message_length != len(data) - 4:
+                done = False
+                while not done:
+                    recvData = self._socket.recv(REQUEST_SIZE)
+                    if len(recvData) < REQUEST_SIZE:
+                        done = True
+                    data += recvData
+
+            data = self.decrypt(data)
+
+        return data
+
+    def recv(self):
         response = []
+        data = self.recv_raw()
         while len(data) > 0:
             try:
+                # need to decrypt before
                 message, remaining = decoder.decode(data, asn1Spec=LDAPMessage())
             except SubstrateUnderrunError:
                 # We need more data
-                remaining = data + self._socket.recv(REQUEST_SIZE)
+                remaining = data + self.recv_raw() 
             else:
                 if message['messageID'] == 0:  # unsolicited notification
                     name = message['protocolOp']['extendedResp']['responseName'] or message['responseName']
@@ -465,10 +969,6 @@ class LDAPConnection:
         return self.recv()
 
     def _parseFilter(self, filterStr):
-        try:
-            filterStr = filterStr.decode()
-        except AttributeError:
-            pass
         filterList = list(reversed(filterStr))
         searchFilter = self._consumeCompositeFilter(filterList)
         if filterList:  # we have not consumed the whole filter string
@@ -573,14 +1073,14 @@ class LDAPConnection:
                 searchFilter['extensibleMatch']['dnAttributes'] = bool(dn)
             if matchingRule:
                 searchFilter['extensibleMatch']['matchingRule'] = matchingRule
-            searchFilter['extensibleMatch']['matchValue'] = value
+            searchFilter['extensibleMatch']['matchValue'] = LDAPConnection._processLdapString(value)
         else:
             if not RE_ATTRIBUTE.match(attribute):
                 raise LDAPFilterInvalidException("invalid filter attribute: '%s'" % attribute)
             if value == '*' and operator == '=':  # present
                 searchFilter['present'] = attribute
             elif '*' in value and operator == '=':  # substring
-                assertions = value.split('*')
+                assertions = [LDAPConnection._processLdapString(assertion) for assertion in value.split('*')]
                 choice = searchFilter['substrings']['substrings'].getComponentType()
                 substrings = []
                 if assertions[0]:
@@ -592,6 +1092,7 @@ class LDAPConnection:
                 searchFilter['substrings']['type'] = attribute
                 searchFilter['substrings']['substrings'].setComponents(*substrings)
             elif '*' not in value:  # simple
+                value = LDAPConnection._processLdapString(value)
                 if operator == '=':
                     searchFilter['equalityMatch'].setComponents(attribute, value)
                 elif operator == '~=':
@@ -604,6 +1105,15 @@ class LDAPConnection:
                 raise LDAPFilterInvalidException("invalid filter '(%s%s%s)'" % (attribute, operator, value))
 
         return searchFilter
+
+
+    @classmethod
+    def _processLdapString(cls, ldapstr):
+        def replace_escaped_chars(match):
+            return chr(int(match.group(1), 16))  # group(1) == "XX" (valid hex)
+
+        escaped_chars = re.compile(r'\\([0-9a-fA-F]{2})')  # Capture any sequence of "\XX" (where XX is a valid hex)
+        return re.sub(escaped_chars, replace_escaped_chars, ldapstr)
 
 
 class LDAPFilterSyntaxError(SyntaxError):

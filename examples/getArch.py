@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-#
-# Author:
-#  beto (@agsolino)
 #
 # Description:
 #   This script will connect against a target (or list of targets) machine/s and gather the OS architecture type
@@ -18,11 +18,13 @@
 #
 #   Have in mind this trick will *not* work if the target system is running Samba. Don't know what happens with macOS.
 #
-# Reference for:
-#  RPCRT, NDR
+# Author:
+#   beto (@agsolino)
 #
-from __future__ import division
-from __future__ import print_function
+# Reference for:
+#   RPCRT, NDR
+#
+
 import argparse
 import logging
 import sys
@@ -76,8 +78,6 @@ class TARGETARCH:
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    # Init the example's logger theme
-    logger.init()
     print(version.BANNER)
 
     parser = argparse.ArgumentParser(add_help = True, description = "Gets the target system's OS architecture version")
@@ -86,23 +86,19 @@ if __name__ == '__main__':
                         'from (one per line). ')
     parser.add_argument('-timeout', action='store', default='2', help='socket timeout out when connecting to the target (default 2 sec)')
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
+    parser.add_argument('-ts', action='store_true', help='Adds timestamp to every logging output')
 
     if len(sys.argv)==1:
         parser.print_help()
         sys.exit(1)
 
     options = parser.parse_args()
+    # Init the example's logger theme
+    logger.init(options.ts, options.debug)
 
     if options.target is None and options.targets is None:
         logging.error('You have to specify a target!')
         sys.exit(1)
-
-    if options.debug is True:
-        logging.getLogger().setLevel(logging.DEBUG)
-        # Print the Library's installation path
-        logging.debug(version.getInstallationPath())
-    else:
-        logging.getLogger().setLevel(logging.INFO)
 
     try:
         getArch = TARGETARCH(options)

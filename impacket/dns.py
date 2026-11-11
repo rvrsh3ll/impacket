@@ -1,31 +1,35 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
+# Description:
+#   RFCs for the DNS Server service
+#
+#   - 1034 - Domain Names -- Concepts and Facilities [https://www.ietf.org/rfc/rfc1034.txt]
+#   - 1035 - Domain Names -- Implementation and Specification [https://www.ietf.org/rfc/rfc1035.txt]
+#   - 1123 - Requirements for Internet Hosts -- Application and Support [https://www.ietf.org/rfc/rfc1123.txt]
+#   - 1886 - DNS Extensions to Support IP Version 6 [https://www.ietf.org/rfc/rfc1886.txt]
+#   - 1995 - Incremental Zone Transfer in DNS [https://www.ietf.org/rfc/rfc1995.txt]
+#   - 1996 - A Mechanism for Prompt Notification of Zone Changes (DNS NOTIFY) [https://www.ietf.org/rfc/rfc1996.txt]
+#   - 2136 - Dynamic Updates in the Domain Name System (DNS UPDATE) [https://www.ietf.org/rfc/rfc2136.txt]
+#   - 2181 - Clarifications to the DNS Specification [https://www.ietf.org/rfc/rfc2181.txt]
+#   - 2308 - Negative Caching of DNS Queries (DNS NCACHE) [https://www.ietf.org/rfc/rfc2308.txt]
+#   - 2535 - Domain Name System Security Extensions (DNSSEC) [https://www.ietf.org/rfc/rfc2535.txt]
+#   - 2671 - Extension Mechanisms for DNS (EDNS0) [https://www.ietf.org/rfc/rfc2671.txt]
+#   - 2782 - A DNS RR for specifying the location of services (DNS SRV) [https://www.ietf.org/rfc/rfc2782.txt]
+#   - 2930 - Secret Key Establishment for DNS (TKEY RR) [https://www.ietf.org/rfc/rfc2930.txt]
+#   - 3645 - Generic Security Service Algorithm for Secret Key Transaction Authentication for DNS (GSS-TSIG) [https://www.ietf.org/rfc/rfc3645.txt]
+#   - 3646 - DNS Configuration options for Dynamic Host Configuration Protocol for IPv6 (DHCPv6) [https://www.ietf.org/rfc/rfc3646.txt]
+#
 # Author:
-#  Andres Blanco
-#  Gustavo Moreira
-
-#
-# RFCs for the DNS Server service
-#
-# 1034 - Domain Names -- Concepts and Facilities [https://www.ietf.org/rfc/rfc1034.txt]
-# 1035 - Domain Names -- Implementation and Specification [https://www.ietf.org/rfc/rfc1035.txt]
-# 1123 - Requirements for Internet Hosts -- Application and Support [https://www.ietf.org/rfc/rfc1123.txt]
-# 1886 - DNS Extensions to Support IP Version 6 [https://www.ietf.org/rfc/rfc1886.txt]
-# 1995 - Incremental Zone Transfer in DNS [https://www.ietf.org/rfc/rfc1995.txt]
-# 1996 - A Mechanism for Prompt Notification of Zone Changes (DNS NOTIFY) [https://www.ietf.org/rfc/rfc1996.txt]
-# 2136 - Dynamic Updates in the Domain Name System (DNS UPDATE) [https://www.ietf.org/rfc/rfc2136.txt]
-# 2181 - Clarifications to the DNS Specification [https://www.ietf.org/rfc/rfc2181.txt]
-# 2308 - Negative Caching of DNS Queries (DNS NCACHE) [https://www.ietf.org/rfc/rfc2308.txt]
-# 2535 - Domain Name System Security Extensions (DNSSEC) [https://www.ietf.org/rfc/rfc2535.txt]
-# 2671 - Extension Mechanisms for DNS (EDNS0) [https://www.ietf.org/rfc/rfc2671.txt]
-# 2782 - A DNS RR for specifying the location of services (DNS SRV) [https://www.ietf.org/rfc/rfc2782.txt]
-# 2930 - Secret Key Establishment for DNS (TKEY RR) [https://www.ietf.org/rfc/rfc2930.txt]
-# 3645 - Generic Security Service Algorithm for Secret Key Transaction Authentication for DNS (GSS-TSIG) [https://www.ietf.org/rfc/rfc3645.txt]
-# 3646 - DNS Configuration options for Dynamic Host Configuration Protocol for IPv6 (DHCPv6) [https://www.ietf.org/rfc/rfc3646.txt]
+#   Andres Blanco
+#   Gustavo Moreira
 #
 
 import socket
@@ -36,7 +40,7 @@ from impacket.ImpactPacket import ProtocolPacket
 
 class DNSFlags():
     'Bitmap with the flags of a dns packet.'
-    # QR - Query/Response - 1 bit 
+    # QR - Query/Response - 1 bit
     QR_QUERY                = int("0000000000000000", 2)
     QR_RESPONSE             = int("1000000000000000", 2)
     # OP - Opcode - 4 bits
@@ -310,20 +314,25 @@ class DNS(ProtocolPacket):
             aux.append((qname, qtype, qclass))
         return (aux, offset)
 
-    def parseCompressedMessage(self, buf, offset=0):
+    def parseCompressedMessage(self, buf, offset=0, visited=None):
         'Parse compressed message defined on rfc1035 4.1.4.'
+        if visited is None:
+            visited = set()
         if offset >= len(buf):
             raise Exception("No more data to parse. Offset is bigger than length of buffer.")
         byte = struct.unpack("B", buf[offset:offset+1])[0]
         #  if the first two bits are ones (11000000=0xC0), the next bits are the offset
         if byte & 0xC0 == 0xC0:
             # It's a pointer
+            if offset in visited:
+                raise Exception("The infinite loop is in DNS decompression. Encountered a cyclic compression pointer.")
+            visited.add(offset)
             pointer = struct.unpack("!H", buf[offset:offset+2])[0] # network unsigned short
             pointer = (pointer & 0x3FFF) - self.__HEADER_BASE_SIZE
             if offset == pointer:
                 raise Exception("The infinite loop is in DNS decompression. Encountered pointer points to the current offset.")
             offset += 2
-            name = self.parseCompressedMessage(buf, pointer)[1]
+            name = self.parseCompressedMessage(buf, pointer, visited)[1]
             return (offset, name)
         else:
             # It's a label
@@ -333,7 +342,7 @@ class DNS(ProtocolPacket):
             offset += 1
             name = buf[offset:offset+byte]
             offset += byte
-            offset, unnamed = self.parseCompressedMessage(buf, offset)
+            offset, unnamed = self.parseCompressedMessage(buf, offset, visited)
             if not unnamed:
                 return (offset, name)
             else:

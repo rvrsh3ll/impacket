@@ -1,18 +1,23 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
-#
-# Author: Alberto Solino (@agsolino)
 #
 # Description:
 #   SMB 2 and 3 Protocol Structures and constants [MS-SMB2]
 #
-from __future__ import division
-from __future__ import print_function
+# Author:
+#   Alberto Solino (@agsolino)
+#
 
+import struct as _struct
 from impacket.structure import Structure
+from impacket import LOG
 
 # Constants
 
@@ -84,12 +89,12 @@ SMB2_GLOBAL_CAP_DIRECTORY_LEASING  = 0x20
 SMB2_GLOBAL_CAP_ENCRYPTION         = 0x40
 
 # Dialects
-SMB2_DIALECT_002      = 0x0202 
-SMB2_DIALECT_21       = 0x0210 
-SMB2_DIALECT_30       = 0x0300 
+SMB2_DIALECT_002      = 0x0202
+SMB2_DIALECT_21       = 0x0210
+SMB2_DIALECT_30       = 0x0300
 SMB2_DIALECT_302      = 0x0302  #SMB 3.0.2
 SMB2_DIALECT_311      = 0x0311  #SMB 3.1.1
-SMB2_DIALECT_WILDCARD = 0x02FF 
+SMB2_DIALECT_WILDCARD = 0x02FF
 
 # SMB2_SESSION_SETUP
 # Flags
@@ -157,18 +162,22 @@ FILE_ATTRIBUTE_TEMPORARY           = 0x00000100
 FILE_ATTRIBUTE_INTEGRITY_STREAM    = 0x00000800
 FILE_ATTRIBUTE_NO_SCRUB_DATA       = 0x00020000
 
-# Share Access
-FILE_SHARE_READ         = 0x00000001
-FILE_SHARE_WRITE        = 0x00000002
-FILE_SHARE_DELETE       = 0x00000004
+# ShareAccess flags
+# A 32-bit field that specifies how the file SHOULD be shared with other processes.
+# As Specified in section 2.2.13 SMB2 CREATE Request.
+FILE_SHARE_READ                  = 0x00000001 # Other open operations can be performed on the file for read access.
+FILE_SHARE_WRITE                 = 0x00000002 # Other open operations can be performed on the file for write access.
+FILE_SHARE_DELETE                = 0x00000004 # Other open operations can be performed on the file for delete access.
 
 # Create Disposition
-FILE_SUPERSEDE          = 0x00000000 
-FILE_OPEN               = 0x00000001
-FILE_CREATE             = 0x00000002
-FILE_OPEN_IF            = 0x00000003
-FILE_OVERWRITE          = 0x00000004
-FILE_OVERWRITE_IF       = 0x00000005
+# Defines the action the server MUST take if the file that is specified in the name field already exists.
+# As Specified in section 2.2.13 SMB2 CREATE Request.
+FILE_SUPERSEDE          = 0x00000000 # If the file already exists, supersede it. Otherwise, create the file. This value SHOULD NOT be used for a printer object.
+FILE_OPEN               = 0x00000001 # If the file already exists, return success; otherwise, fail the operation. MUST NOT be used for a printer object. 
+FILE_CREATE             = 0x00000002 # If the file already exists, fail the operation; otherwise, create the file. 
+FILE_OPEN_IF            = 0x00000003 # Open the file if it already exists; otherwise, create the file. This value SHOULD NOT be used for a printer object.
+FILE_OVERWRITE          = 0x00000004 # Overwrite the file if it already exists; otherwise, fail the operation. MUST NOT be used for a printer object.
+FILE_OVERWRITE_IF       = 0x00000005 # Overwrite the file if it already exists; otherwise, create the file. This value SHOULD NOT be used for a printer object.
 
 # Create Options
 FILE_DIRECTORY_FILE            = 0x00000001
@@ -186,30 +195,32 @@ FILE_OPEN_BY_FILE_ID           = 0x00002000
 FILE_OPEN_FOR_BACKUP_INTENT    = 0x00004000
 FILE_NO_COMPRESSION            = 0x00008000
 FILE_RESERVE_OPFILTER          = 0x00100000
-FILE_OPEN_REPARSE_POINT        = 0x00200000 
+FILE_OPEN_REPARSE_POINT        = 0x00200000
 FILE_OPEN_NO_RECALL            = 0x00400000
 FILE_OPEN_FOR_FREE_SPACE_QUERY = 0x00800000
 
-# File Access Mask / Desired Access
-FILE_READ_DATA         = 0x00000001
-FILE_WRITE_DATA        = 0x00000002
-FILE_APPEND_DATA       = 0x00000004
-FILE_READ_EA           = 0x00000008
-FILE_WRITE_EA          = 0x00000010
-FILE_EXECUTE           = 0x00000020
-FILE_READ_ATTRIBUTES   = 0x00000080
-FILE_WRITE_ATTRIBUTES  = 0x00000100
-DELETE                 = 0x00010000
-READ_CONTROL           = 0x00020000
-WRITE_DAC              = 0x00040000
-WRITE_OWNER            = 0x00080000
-SYNCHRONIZE            = 0x00100000
-ACCESS_SYSTEM_SECURITY = 0x01000000
-MAXIMUM_ALLOWED        = 0x02000000
-GENERIC_ALL            = 0x10000000
-GENERIC_EXECUTE        = 0x20000000
-GENERIC_WRITE          = 0x40000000
-GENERIC_READ           = 0x80000000
+# File Access Mask (DesiredAccess) flags
+# The level of access that is required, as specified in section 2.2.13.1.
+FILE_READ_DATA          = 0x00000001 # This value indicates the right to read data from the file or named pipe.
+FILE_WRITE_DATA         = 0x00000002 # This value indicates the right to write data into the file or named pipe beyond the end of the file.
+FILE_APPEND_DATA        = 0x00000004 # This value indicates the right to append data into the file or named pipe.
+FILE_READ_EA            = 0x00000008 # This value indicates the right to read the extended attributes of the file or named pipe.
+FILE_WRITE_EA           = 0x00000010 # This value indicates the right to write or change the extended attributes to the file or named pipe.
+FILE_DELETE_CHILD       = 0x00000040 # This value indicates the right to delete entries within a directory.
+FILE_EXECUTE            = 0x00000020 # This value indicates the right to execute the file.
+FILE_READ_ATTRIBUTES    = 0x00000080 # This value indicates the right to read the attributes of the file.
+FILE_WRITE_ATTRIBUTES   = 0x00000100 # This value indicates the right to change the attributes of the file.
+DELETE                  = 0x00010000 # This value indicates the right to delete the file.
+READ_CONTROL            = 0x00020000 # This value indicates the right to read the security descriptor for the file or named pipe.
+WRITE_DAC               = 0x00040000 # This value indicates the right to change the discretionary access control list (DACL) in the security descriptor for the file or named pipe. For the DACL data structure, see ACL in [MS-DTYP].
+WRITE_OWNER             = 0x00080000 # This value indicates the right to change the owner in the security descriptor for the file or named pipe.
+SYNCHRONIZE             = 0x00100000 # SMB2 clients set this flag to any value. SMB2 servers SHOULD ignore this flag.
+ACCESS_SYSTEM_SECURITY  = 0x01000000 # This value indicates the right to read or change the system access control list (SACL) in the security descriptor for the file or named pipe. For the SACL data structure, see ACL in [MS-DTYP].
+MAXIMUM_ALLOWED         = 0x02000000 # This value indicates that the client is requesting an open to the file with the highest level of access the client has on this file. If no access is granted for the client on this file, the server MUST fail the open with STATUS_ACCESS_DENIED.
+GENERIC_ALL             = 0x10000000 # This value indicates a request for all the access flags that are previously listed except MAXIMUM_ALLOWED and ACCESS_SYSTEM_SECURITY.
+GENERIC_EXECUTE         = 0x20000000 # This value indicates a request for the following combination of access flags listed above: FILE_READ_ATTRIBUTES| FILE_EXECUTE| SYNCHRONIZE| READ_CONTROL.
+GENERIC_WRITE           = 0x40000000 # This value indicates a request for the following combination of access flags listed above: FILE_WRITE_DATA| FILE_APPEND_DATA| FILE_WRITE_ATTRIBUTES| FILE_WRITE_EA| SYNCHRONIZE| READ_CONTROL.
+GENERIC_READ            = 0x80000000 # This value indicates a request for the following combination of access flags listed above: FILE_READ_DATA| FILE_READ_ATTRIBUTES| FILE_REA
 
 # Directory Access Mask 
 FILE_LIST_DIRECTORY    = 0x00000001
@@ -219,19 +230,19 @@ FILE_TRAVERSE          = 0x00000020
 FILE_DELETE_CHILD      = 0x00000040
 
 # Create Contexts
-SMB2_CREATE_EA_BUFFER                     = 0x45787441 
+SMB2_CREATE_EA_BUFFER                     = 0x45787441
 SMB2_CREATE_SD_BUFFER                     = 0x53656344
-SMB2_CREATE_DURABLE_HANDLE_REQUEST        = 0x44486e51 
-SMB2_CREATE_DURABLE_HANDLE_RECONNECT      = 0x44486e43 
-SMB2_CREATE_ALLOCATION_SIZE               = 0x416c5369 
-SMB2_CREATE_QUERY_MAXIMAL_ACCESS_REQUEST  = 0x4d784163 
-SMB2_CREATE_TIMEWARP_TOKEN                = 0x54577270 
-SMB2_CREATE_QUERY_ON_DISK_ID              = 0x51466964 
-SMB2_CREATE_REQUEST                       = 0x52714c73 
-SMB2_CREATE_REQUEST_LEASE_V2              = 0x52714c73 
-SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2     = 0x44483251 
-SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2   = 0x44483243 
-SMB2_CREATE_APP_INSTANCE_ID               = 0x45BCA66AEFA7F74A9008FA462E144D74 
+SMB2_CREATE_DURABLE_HANDLE_REQUEST        = 0x44486e51
+SMB2_CREATE_DURABLE_HANDLE_RECONNECT      = 0x44486e43
+SMB2_CREATE_ALLOCATION_SIZE               = 0x416c5369
+SMB2_CREATE_QUERY_MAXIMAL_ACCESS_REQUEST  = 0x4d784163
+SMB2_CREATE_TIMEWARP_TOKEN                = 0x54577270
+SMB2_CREATE_QUERY_ON_DISK_ID              = 0x51466964
+SMB2_CREATE_REQUEST                       = 0x52714c73
+SMB2_CREATE_REQUEST_LEASE_V2              = 0x52714c73
+SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2     = 0x44483251
+SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2   = 0x44483243
+SMB2_CREATE_APP_INSTANCE_ID               = 0x45BCA66AEFA7F74A9008FA462E144D74
 
 # Flags
 SMB2_CREATE_FLAG_REPARSEPOINT  = 0x1
@@ -254,7 +265,7 @@ SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET = 0x4
 
 # SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 Flags
 SMB2_DHANDLE_FLAG_PERSISTENT = 0x02
- 
+
 # SMB2_CLOSE
 # Flags
 SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB  = 0x0001
@@ -297,6 +308,125 @@ FSCTL_DFS_GET_REFERRALS_EX           = 0x000601B0
 FSCTL_FILE_LEVEL_TRIM                = 0x00098208
 FSCTL_VALIDATE_NEGOTIATE_INFO        = 0x00140204
 
+# DFS Referral Constants (MS-DFSC)
+DFS_REFERRAL_SERVER_TYPE_LINK = 0x0000
+DFS_REFERRAL_SERVER_TYPE_ROOT = 0x0001
+
+# DFS Referral Request (MS-DFSC 2.2.2)
+class REQ_GET_DFS_REFERRAL(Structure):
+    structure = (
+        ('MaxReferralLevel', '<H'),
+        ('RequestFileName', ':'),
+    )
+
+# DFS Referral Response Header (MS-DFSC 2.2.3)
+class RESP_GET_DFS_REFERRAL(Structure):
+    structure = (
+        ('PathConsumed', '<H'),
+        ('NumberOfReferrals', '<H'),
+        ('ReferralHeaderFlags', '<I'),
+        ('ReferralEntries', ':'),
+    )
+
+# DFS Referral Entry V3/V4 header (MS-DFSC 2.2.5.3)
+class DFS_REFERRAL_V3(Structure):
+    structure = (
+        ('VersionNumber', '<H'),
+        ('Size', '<H'),
+        ('ServerType', '<H'),
+        ('ReferralEntryFlags', '<H'),
+        ('TimeToLive', '<I'),
+        ('DFSPathOffset', '<H'),
+        ('DFSAlternatePathOffset', '<H'),
+        ('NetworkAddressOffset', '<H'),
+        ('ServiceSiteGuid', '16s=b""'),
+    )
+
+def _read_utf16_string(data, offset):
+    """Read a null-terminated UTF-16LE string from data at the given offset."""
+    result = b''
+    i = offset
+    while i + 1 < len(data):
+        char = data[i:i+2]
+        if char == b'\x00\x00':
+            break
+        result += char
+        i += 2
+    return result.decode('utf-16le', errors='replace')
+
+def parse_dfs_referral(data):
+    """
+    Parse a RESP_GET_DFS_REFERRAL response buffer and return a list of referral entries.
+    Each entry is a dict with keys: dfs_path, dfs_alt_path, network_address, server_type, ttl, target_server, target_share, target_path.
+    """
+    resp = RESP_GET_DFS_REFERRAL(data)
+    referrals = []
+    entries_data = resp['ReferralEntries']
+    offset = 0
+
+    LOG.debug("DFS referral response: PathConsumed=%d NumberOfReferrals=%d Flags=0x%x EntriesLen=%d" % (
+        resp['PathConsumed'], resp['NumberOfReferrals'], resp['ReferralHeaderFlags'], len(entries_data)))
+
+    for idx in range(resp['NumberOfReferrals']):
+        if offset + 4 > len(entries_data):
+            break
+        version = _struct.unpack('<H', entries_data[offset:offset+2])[0]
+        size = _struct.unpack('<H', entries_data[offset+2:offset+4])[0]
+        if size == 0:
+            break
+
+        LOG.debug("DFS referral entry[%d]: version=%d size=%d offset=%d" % (idx, version, size, offset))
+
+        if version in (3, 4):
+            # Parse fixed header: version(2) + size(2) + serverType(2) + flags(2) + ttl(4) + pathOff(2) + altPathOff(2) + netAddrOff(2) = 18 bytes
+            if offset + 18 > len(entries_data):
+                break
+            server_type, flags, ttl, path_off, alt_path_off, net_addr_off = _struct.unpack(
+                '<HHIHHH', entries_data[offset+4:offset+18])
+
+            LOG.debug("  serverType=%d flags=0x%x ttl=%d pathOff=%d altPathOff=%d netAddrOff=%d" % (
+                server_type, flags, ttl, path_off, alt_path_off, net_addr_off))
+
+            dfs_path = ''
+            dfs_alt_path = ''
+            network_address = ''
+            if path_off > 0:
+                dfs_path = _read_utf16_string(entries_data, offset + path_off)
+            if alt_path_off > 0:
+                dfs_alt_path = _read_utf16_string(entries_data, offset + alt_path_off)
+            if net_addr_off > 0:
+                network_address = _read_utf16_string(entries_data, offset + net_addr_off)
+
+            LOG.debug("  dfs_path='%s' network_address='%s'" % (dfs_path, network_address))
+
+            # Parse network_address into server and share
+            # Strip leading backslashes (may be \\server or \server depending on response)
+            target_server = ''
+            target_share = ''
+            target_path = ''
+            cleaned = network_address.lstrip('\\')
+            if cleaned:
+                parts = cleaned.split('\\')
+                if len(parts) >= 1:
+                    target_server = parts[0]
+                if len(parts) >= 2:
+                    target_share = parts[1]
+                if len(parts) >= 3:
+                    target_path = '\\'.join(parts[2:])
+
+            referrals.append({
+                'dfs_path': dfs_path,
+                'dfs_alt_path': dfs_alt_path,
+                'network_address': network_address,
+                'server_type': server_type,
+                'ttl': ttl,
+                'target_server': target_server,
+                'target_share': target_share,
+                'target_path': target_path,
+            })
+        offset += size
+    return referrals, resp['PathConsumed']
+
 # Flags
 SMB2_0_IOCTL_IS_FSCTL  = 0x1
 
@@ -318,7 +448,7 @@ RSS_CAPABLE  = 0x01
 RDMA_CAPABLE = 0x02
 
 # SMB2_QUERY_DIRECTORIES
-# Information Class 
+# Information Class
 FILE_DIRECTORY_INFORMATION         = 0x01
 FILE_FULL_DIRECTORY_INFORMATION    = 0x02
 FILEID_FULL_DIRECTORY_INFORMATION  = 0x26
@@ -355,7 +485,7 @@ FILE_NOTIFY_CHANGE_STREAM_WRITE  = 0x00000800
 FILE_ACTION_ADDED            = 0x00000001
 FILE_ACTION_REMOVED          = 0x00000002
 FILE_ACTION_MODIFIED         = 0x00000003
-FILE_ACTION_RENAMED_OLD_NAME = 0x00000004 
+FILE_ACTION_RENAMED_OLD_NAME = 0x00000004
 FILE_ACTION_RENAMED_NEW_NAME = 0x00000005
 
 # SMB2_QUERY_INFO
@@ -439,6 +569,55 @@ SL_INDEX_SPECIFIED      = 0x00000004
 # TRANSFORM_HEADER
 SMB2_ENCRYPTION_AES128_CCM = 0x0001
 SMB2_ENCRYPTION_AES128_GCM = 0x0002
+
+# Source:
+# https://en.wikipedia.org/wiki/List_of_Microsoft_Windows_versions
+# https://www.gaijin.at/en/infos/windows-version-numbers
+WIN_VERSIONS = {
+    102:"Windows 3.1",
+    103:"Windows 3.1",
+    153:"Windows 3.2",
+    300:"Windows 3.11",
+    528:"Windows NT 3.1 SP3",
+    807:"Windows NT 3.5",
+    950:"Windows 95",
+    1057:"Windows NT 3.51",
+    1381:"Windows NT 4.0",
+    1998:"Windows 98",
+    2195:"Windows 2000",
+    2222:"Windows 98 Second Edition",
+    2600:"Windows XP",
+    2700:"Windows XP",
+    2710:"Windows XP",
+    3000:"Windows Me",
+    3790:"Windows XP / Server 2003 / Server 2003 R2",
+    6002:"Windows Vista",
+    6003:"Windows Server 2008",
+    7601:"Windows 7 / Server 2008 R2",
+    8400:"Windows Home Server 2011",
+    9200:"Windows 8 / Server 2012",
+    9600:"Windows 8.1 / Server 2012 R2",
+    10240:"Windows 10",
+    10586:"Windows 10",
+    14393:"Windows 10 / Server 2016",
+    15063:"Windows 10",
+    16299:"Windows 10 / Server 2016",
+    17134:"Windows 10 / Server 2016",
+    17763:"Windows 10 / Server 2019",
+    18362:"Windows 10 / Server 2019",
+    18363:"Windows 10 / Server 2019",
+    19041:"Windows 10 / Server 2019",
+    19042:"Windows 10 / Server 2019",
+    19043:"Windows 10",
+    19044:"Windows 10",
+    19045:"Windows 10",
+    20348:"Windows Server 2022",
+    22000:"Windows 11",
+    22621:"Windows 11",
+    22631:"Windows 11",
+    25398:"Windows Server 2022",
+    26100:"Windows 11 / Server 2025",
+}
 
 
 # STRUCtures
@@ -532,6 +711,9 @@ class SMB3Packet(SMBPacketBase):
         ('Data',':=""'),
     )
 
+
+class Empty(Structure):
+    pass
 class SMB2Error(Structure):
     structure = (
         ('StructureSize','<H=9'),
@@ -614,6 +796,7 @@ class SMB2NegotiateContext(Structure):
         ('ContextType','<H=0'),
         ('DataLength','<H=0'),
         ('Reserved','<L=0'),
+        ('_Data', '_-Data', 'self["DataLength"]'),
         ('Data',':=""'),
     )
 
@@ -622,6 +805,7 @@ class SMB2PreAuthIntegrityCapabilities(Structure):
     structure = (
         ('HashAlgorithmCount','<H=0'),
         ('SaltLength','<H=0'),
+        ('_HashAlgorithms', '_-HashAlgorithms', 'self["HashAlgorithmCount"]*2'),
         ('HashAlgorithms',':=""'),
         ('Salt',':=""'),
     )
@@ -630,7 +814,7 @@ class SMB2PreAuthIntegrityCapabilities(Structure):
 class SMB2EncryptionCapabilities(Structure):
     structure = (
         ('CipherCount','<H=0'),
-        ('Ciphers','<H=0'),
+        ('Ciphers',':=""'),
     )
 
 # SMB2_COMPRESSION_CAPABILITIES
@@ -648,7 +832,7 @@ class SMB2NetNameNegotiateContextID(Structure):
         ('NetName',':=""'),
     )
 
-# SMB2_SESSION_SETUP 
+# SMB2_SESSION_SETUP
 class SMB2SessionSetup(Structure):
     SIZE = 24
     structure = (
@@ -673,10 +857,10 @@ class SMB2SessionSetup(Structure):
 
     def getData(self):
         #self['AlignPad'] = '\x00' * ((8 - ((24 + SMB2_PACKET_SIZE) & 7)) & 7)
-        #self['SecurityBufferOffset'] = 24 + SMB2_PACKET_SIZE +len(self['AlignPad']) 
+        #self['SecurityBufferOffset'] = 24 + SMB2_PACKET_SIZE +len(self['AlignPad'])
         #self['SecurityBufferLength'] += len(self['AlignPad'])
         return Structure.getData(self)
-        
+
 
 class SMB2SessionSetup_Response(Structure):
     structure = (
@@ -695,7 +879,7 @@ class SMB2Logoff(Structure):
     structure = (
         ('StructureSize','<H=4'),
         ('Reserved','<H=0'),
-    ) 
+    )
 
 
 class SMB2Logoff_Response(Structure):
@@ -921,7 +1105,7 @@ class SMB2_CREATE_QUERY_ON_DISK_ID(Structure):
     )
 
 # Todo: Add Classes for
-#SMB2_CREATE_SD_BUFFER                    
+#SMB2_CREATE_SD_BUFFER
 
 # SMB2_CLOSE
 class SMB2Close(Structure):
@@ -1188,7 +1372,7 @@ class NETWORK_RESILIENCY_REQUEST(Structure):
     structure = (
         ('Timeout','<L=0'),
         ('Reserved','<L=0'),
-    ) 
+    )
 
 class VALIDATE_NEGOTIATE_INFO(Structure):
     structure = (
@@ -1418,6 +1602,82 @@ class SMB2QueryInfo_Response(Structure):
        ('Buffer',':'),
    )
 
+class FILE_BASIC_INFORMATION (Structure):
+    structure = (
+        ('CreationTime','<q'),
+        ('LastAccessTime','<q'),
+        ('LastWriteTime','<q'),
+        ('ChangeTime','<q'),
+        ('FileAttributes','<L'),
+        ('Reserved','<L=0'),
+    )
+
+class FILE_STANDARD_INFORMATION (Structure):
+    structure = (
+        ('AllocationSize','<q'),
+        ('EndOfFile','<q'),
+        ('NumberOfLinks','<L'),
+        ('DeletePending','<B=0'),
+        ('Directory','<B'),
+        ('Reserved','<H=0'),
+    )
+
+class FILE_INTERNAL_INFORMATION (Structure):
+    structure = (
+        ('IndexNumber','<q=0'),
+    )
+
+class FILE_EA_INFORMATION (Structure):
+    structure = (
+        ('EaSize','<L'),
+    )
+
+class FILE_ACCESS_INFORMATION (Structure):
+    structure = (
+        ('AccessFlags','<L'),
+    )
+
+class FILE_POSITION_INFORMATION (Structure):
+    structure = (
+        ('CurrentByteOffset','<Q'),
+    )
+
+class FILE_MODE_INFORMATION (Structure):
+    structure = (
+        ('Mode','<L=0'),
+    )
+
+class FILE_ALIGNMENT_INFORMATION (Structure):
+    structure = (
+        ('AlignmentRequirement','<L'),
+    )
+
+class FILE_NAME_INFORMATION (Structure):
+    structure = (
+        ('FileNameLength','<L=0'),
+        ('_FileName','_-FileName', 'self["FileNameLength"]'),
+        ('FileName',':'),
+    )
+
+class FILE_ALL_INFORMATION(Structure):
+    structure = (
+        ('BasicInformation',':',FILE_BASIC_INFORMATION),
+        ('StandardInformation',':',FILE_STANDARD_INFORMATION),
+        ('InternalInformation',':',FILE_INTERNAL_INFORMATION),
+        ('EaInformation',':',FILE_EA_INFORMATION),
+        ('AccessInformation',':',FILE_ACCESS_INFORMATION),
+        ('PositionInformation',':',FILE_POSITION_INFORMATION),
+        ('ModeInformation',':',FILE_MODE_INFORMATION),
+        ('AlignmentInformation',':',FILE_ALIGNMENT_INFORMATION),
+        ('NameInformation',':',FILE_NAME_INFORMATION),
+    )
+
+class FILE_ATTRIBUTE_TAG_INFORMATION(Structure):
+    structure = (
+        ('FileAttributes','<L'),
+        ('ReparseTag','<L=0'),
+    )
+
 # SMB2_SET_INFO
 class SMB2SetInfo(Structure):
     SIZE = 32
@@ -1490,13 +1750,7 @@ class SMB2_COMPRESSION_PATTERN_PAYLOAD_V1(Structure):
         ('Repetitions','<L=0'),
     )
 
-# SMB2_FILE_INTERNAL_INFO
-class FileInternalInformation(Structure):
-    structure = (
-        ('IndexNumber','<q=0'),
-    )
-
-# SMB2_SEC_INFO_00       
+# SMB2_SEC_INFO_00
 class FileSecInformation(Structure):
     structure = (
         ('Revision','<h=1'),

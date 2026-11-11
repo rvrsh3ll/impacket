@@ -1,12 +1,17 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-
-
-# -*- mode: python; tab-width: 4 -*-
+# Author:
+#   Altered source done by Alberto Solino (@agsolino)
+#
+# Copyright and license note from Pysmb:
 #
 # Copyright (C) 2001 Michael Teo <michaelteo@bigfoot.com>
 # nmb.py - NetBIOS library
@@ -29,11 +34,6 @@
 #
 # 3. This notice cannot be removed or altered from any source distribution.
 #
-# Altered source done by Alberto Solino (@agsolino)
-
-from __future__ import division
-from __future__ import print_function
-from __future__ import absolute_import
 import errno
 import re
 import select
@@ -327,6 +327,7 @@ class NBNodeStatusResponse(NBNSResourceRecord):
         res = pack('!B', self.num_names )
         for i in range(0, self.num_names):
             res += self.entries[i].getData()
+        res += self.statistics.getData() # (RFC 1002) 4.2.18.  NODE STATUS RESPONSE
 
 class NBPositiveNameQueryResponse(NBNSResourceRecord):
     def __init__(self, data = 0):
@@ -508,12 +509,12 @@ class NetBIOS:
     # Creates a NetBIOS instance without specifying any default NetBIOS domain nameserver.
     # All queries will be sent through the servport.
     def __init__(self, servport = NETBIOS_NS_PORT):
-        self.__servport = NETBIOS_NS_PORT
+        self.__servport = servport
         self.__nameserver = None
         self.__broadcastaddr = BROADCAST_ADDR
         self.mac = b'00-00-00-00-00-00'
 
-    def _setup_connection(self, dstaddr, timeout=None):
+    def _setup_connection(self, dstaddr):
         port = rand.randint(10000, 60000)
         af, socktype, proto, _canonname, _sa = socket.getaddrinfo(dstaddr, port, socket.AF_INET, socket.SOCK_DGRAM)[0]
         s = socket.socket(af, socktype, proto)

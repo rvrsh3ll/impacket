@@ -1,24 +1,29 @@
-# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# SSL utilities
+# Description:
+#   SSL utilities
+#
+#   Various functions and classes for SSL support:
+#     - generating certificates
+#     - creating SSL capable SOCKS protocols
+#
+#   Most of the SSL generation example code comes from the pyopenssl examples
+#     https://github.com/pyca/pyopenssl/blob/master/examples/certgen.py
+#
+#   Made available under the Apache license by the pyopenssl team
+#     See https://github.com/pyca/pyopenssl/blob/master/LICENSE
 #
 # Author:
-#  Dirk-jan Mollema (@_dirkjan) / Fox-IT (https://www.fox-it.com)
+#   Dirk-jan Mollema (@_dirkjan) / Fox-IT (https://www.fox-it.com)
 #
-# Description:
-#     Various functions and classes for SSL support:
-#      - generating certificates
-#      - creating SSL capable SOCKS protocols
-#
-# Most of the SSL generation example code comes from the pyopenssl examples
-#    https://github.com/pyca/pyopenssl/blob/master/examples/certgen.py
-#
-# Made available under the Apache license by the pyopenssl team
-#   See https://github.com/pyca/pyopenssl/blob/master/LICENSE
 from OpenSSL import crypto, SSL
 from impacket import LOG
 
@@ -52,7 +57,8 @@ class SSLServerMixin(object):
         # Create a context, we don't really care about the SSL/TLS
         # versions used since it is only intended for local use and thus
         # doesn't have to be super-secure
-        ctx = SSL.Context(SSL.SSLv23_METHOD)
+        ctx = SSL.Context(SSL.TLS_METHOD)
+        ctx.set_cipher_list('ALL:@SECLEVEL=0'.encode('utf-8'))
         try:
             ctx.use_privatekey_file(cert)
             ctx.use_certificate_file(cert)

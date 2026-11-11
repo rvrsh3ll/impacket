@@ -1,12 +1,16 @@
-# SECUREAUTH LABS. Copyright 2020 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# Copyright Fortra, LLC and its affiliated companies 
+#
+# All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # Authors:
-#  Arseniy Sharoglazov <mohemiv@gmail.com> / Positive Technologies (https://www.ptsecurity.com/)
-#  Based on @agsolino and @_dirkjan code
+#   Arseniy Sharoglazov <mohemiv@gmail.com> / Positive Technologies (https://www.ptsecurity.com/)
+#   Based on @agsolino and @_dirkjan code
 #
 
 from struct import unpack
@@ -17,11 +21,12 @@ from impacket.nt_errors import STATUS_SUCCESS, STATUS_ACCESS_DENIED
 from impacket.ntlm import NTLMAuthChallenge
 from impacket.spnego import SPNEGO_NegTokenResp
 
+from impacket.dcerpc.v5 import transport, rpcrt, epm, tsch, icpr
 from impacket.dcerpc.v5 import transport, rpcrt, epm, tsch
 from impacket.dcerpc.v5.ndr import NDRCALL
 from impacket.dcerpc.v5.rpcrt import DCERPC_v5, MSRPCBind, CtxItem, MSRPCHeader, SEC_TRAILER, MSRPCBindAck, \
     MSRPCRespHeader, MSRPCBindNak, DCERPCException, RPC_C_AUTHN_WINNT, RPC_C_AUTHN_LEVEL_CONNECT, \
-    rpc_status_codes, rpc_provider_reason
+    rpc_status_codes, rpc_provider_reason, RPC_C_AUTHN_LEVEL_NONE
 
 PROTOCOL_CLIENT_CLASS = "RPCRelayClient"
 
@@ -128,12 +133,16 @@ class RPCRelayClient(ProtocolClient):
 
         if self.endpoint == "TSCH":
             self.endpoint_uuid = tsch.MSRPC_UUID_TSCHS
+        elif self.endpoint == "ICPR":
+            self.endpoint_uuid = icpr.MSRPC_UUID_ICPR
         else:
             raise NotImplementedError("Not implemented!")
 
         if self.serverConfig.rpc_use_smb:
             if self.endpoint == "TSCH":
                 self.stringbinding = "ncacn_np:%s[\\pipe\\atsvc]" % target.netloc
+            if self.endpoint == "ICPR":
+                self.stringbinding = "ncacn_np:%s[\\pipe\\cert]" % target.netloc
             else:
                 raise NotImplementedError("Not implemented!")
         else:
@@ -156,7 +165,11 @@ class RPCRelayClient(ProtocolClient):
         self.session.connect()
 
         if self.serverConfig.rpc_use_smb:
+            self.session.set_auth_level(RPC_C_AUTHN_LEVEL_NONE)
             LOG.info("Authentication to smb://%s:%d succeeded" % (self.target.netloc, self.serverConfig.rpc_smb_port))
+        else:
+            self.session.set_auth_level(RPC_C_AUTHN_LEVEL_CONNECT)
+        self.session.connect()
 
         return True
 
@@ -171,6 +184,9 @@ class RPCRelayClient(ProtocolClient):
     def sendAuth(self, authenticateMessageBlob, serverChallenge=None):
         if unpack('B', authenticateMessageBlob[:1])[0] == SPNEGO_NegTokenResp.SPNEGO_NEG_TOKEN_RESP:
             respToken2 = SPNEGO_NegTokenResp(authenticateMessageBlob)
+            if respToken2.isNegoExSelected():
+                LOG.info("Target selected NEGOEX/PKU2U authentication, relay currently not supported for this mechanism")
+                raise Exception("NEGOEX/PKU2U relay is not supported")
             auth_data = respToken2['ResponseToken']
         else:
             auth_data = authenticateMessageBlob
